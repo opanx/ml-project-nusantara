@@ -56,20 +56,20 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.9
-          name: "MLBB External Tool v1.9"
+          tag_name: v1.10
+          name: "MLBB External Tool v1.10"
           body: |
-            ## MLBB External Tool v1.9
+            ## MLBB External Tool v1.10
             
             Retribution auto + ESP for Mobile Legends.
             
             ### Changes
-            - **Android 16 support** — added patchesTable entry for version 16
-            - Fixes SIGSEGV on Android 16 AOSP ROMs
-            - NDK r21 compatibility (same as herz-kimmy.sh)
-            - Black Obsidian ImGui theme
-            - Auto Retri with priority modes
-            - ESP, KDA, Kill Steal Alert
+            - **Multi-process fallback** — tries UnityKillsMe, then main process
+            - **Multi-lib fallback** — tries libcsharp.so, then liblogic.so
+            - **Debug logging** — verbose pointer chain debug on startup
+            - Null checks on BattleManager chain (prevents silent failures)
+            - Android 16 support (patchesTable v16)
+            - NDK r21 compatibility
             
             ### How to use
             1. Push `panxcz` to device

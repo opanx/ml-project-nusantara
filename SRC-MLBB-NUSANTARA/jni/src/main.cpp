@@ -221,8 +221,11 @@ void DrawMonster(ImDrawList *Draw) {
     
     float lineSize = abs_ScreenY / 432;
     long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER);
+    if (!a1) return;
     long a2 = getPtr641((a1 + ((0x100 | 0xB8) & 0xFF)));
+    if (!a2) return;
     long a32 = getPtr641((a2 << 1) >> 1);
+    if (!a32) return;
 
     /**
     class BattleManager
@@ -722,7 +725,7 @@ void Layout_tick_UI() {
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_AlwaysAutoResize;
 ImGui::SetNextWindowSizeConstraints(ImVec2(800, 0), ImVec2(820, FLT_MAX));
 
-ImGui::Begin(oxorany("             Panxcz v0.1 - MLBB Tool"), nullptr, window_flags);
+ImGui::Begin(oxorany("         Panxcz v1.10 - MLBB Tool"), nullptr, window_flags);
 
 
     if (ImGui::BeginTabBar("####")) {
@@ -851,9 +854,14 @@ ImGui::Begin(oxorany("             Panxcz v0.1 - MLBB Tool"), nullptr, window_fl
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] Panxcz v0.1 - MLBB Tool\n");
+    printf("[+] Panxcz v1.10 - MLBB Tool\n");
     printf("[+] Finding game process...\n");
+    // Try multiple process names (MLBB varies per region/version)
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
+    if (pid <= 0) {
+        printf("[~] UnityKillsMe not found, trying main process...\n");
+        pid = pidof(oxorany("com.mobile.legends"));
+    }
     if (pid <= 0) {
         printf("[-] Game not found! Start MLBB first.\n");
         return -1;
@@ -863,8 +871,11 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     
     libbase = GetBase(oxorany("libcsharp.so"));
     if (libbase == 0) {
-        printf("[-] libcsharp.so not found! Game may not be fully loaded.\n");
-        printf("[-] Wait for game to load then try again.\n");
+        printf("[-] libcsharp.so not found! Trying liblogic.so...\n");
+        libbase = GetBase(oxorany("liblogic.so"));
+    }
+    if (libbase == 0) {
+        printf("[-] No game library found! Game may not be fully loaded.\n");
         return -1;
     }
     printf("[+] libcsharp.so: 0x%lx\n", libbase);
@@ -887,10 +898,45 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     
     ImGui::GetStyle().WindowRounding = 25.0f;
     printf("[+] Starting main loop...\n");
+    
+    // First-frame debug: verify offset chain
+    {
+        long bm = getPtr641(libbase + OFF_BATTLE_MANAGER);
+        printf("[DEBUG] BattleManager @ libbase+0x%x = 0x%lx\n", OFF_BATTLE_MANAGER, bm);
+        if (bm) {
+            long a2 = getPtr641((bm + ((0x100 | 0xB8) & 0xFF)));
+            printf("[DEBUG] a2 (bm+0xB8) = 0x%lx\n", a2);
+            long a32 = getPtr641((a2 << 1) >> 1);
+            printf("[DEBUG] a32 (a2>>1) = 0x%lx\n", a32);
+            if (a32) {
+                long selfp = getPtr641(a32 + OFF_LOCAL_PLAYER_SHOW);
+                printf("[DEBUG] LocalPlayer @ a32+0x%x = 0x%lx\n", OFF_LOCAL_PLAYER_SHOW, selfp);
+                long showPlayers = getPtr641(a32 + OFF_SHOW_PLAYERS);
+                printf("[DEBUG] ShowPlayers @ a32+0x%x = 0x%lx\n", OFF_SHOW_PLAYERS, showPlayers);
+                if (showPlayers) {
+                    long playerList = getPtr641(showPlayers + 0x10);
+                    uint playerCount = Read<uint>(showPlayers + 0x18);
+                    printf("[DEBUG] Players list: ptr=0x%lx count=%u\n", playerList, playerCount);
+                }
+                long showMonsters = getPtr641(a32 + OFF_SHOW_MONSTERS);
+                printf("[DEBUG] ShowMonsters @ a32+0x%x = 0x%lx\n", OFF_SHOW_MONSTERS, showMonsters);
+                if (showMonsters) {
+                    long monsterList = getPtr641(showMonsters + 0x10);
+                    uint monsterCount = Read<uint>(showMonsters + 0x18);
+                    printf("[DEBUG] Monsters list: ptr=0x%lx count=%u\n", monsterList, monsterCount);
+                }
+            }
+        } else {
+            printf("[DEBUG] BattleManager is NULL! Offsets may be wrong.\n");
+            printf("[DEBUG] libbase = 0x%lx, trying to scan for BattleManager pattern...\n", libbase);
+        }
+    }
+    
+    static int debugFrameCount = 0;
     while (main_thread_flag) {
-        // Safety: verify libbase still valid
         if (libbase == 0) {
             libbase = GetBase(oxorany("libcsharp.so"));
+            if (libbase == 0) libbase = GetBase(oxorany("liblogic.so"));
             if (libbase == 0) {
                 usleep(500000);
                 continue;
@@ -902,6 +948,12 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         drawBegin();
         Layout_tick_UI();
         drawEnd();
+        debugFrameCount++;
+        if (debugFrameCount % 600 == 0) {
+            // Log every ~6 seconds
+            long bm = getPtr641(libbase + OFF_BATTLE_MANAGER);
+            printf("[DEBUG] Frame %d: BattleManager=0x%lx libbase=0x%lx\n", debugFrameCount, bm, libbase);
+        }
         usleep(1000);
     }
     shutdown();
