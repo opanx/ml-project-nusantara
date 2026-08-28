@@ -131,8 +131,13 @@ uintptr_t FindBattleManager() {
         char perms[5];
         unsigned long inode = 0;
         char name[256] = {0};
-        if (sscanf(line, "%lx-%lx %4s %*s %*s %lu %255[^
-]", &start, &end, perms, &inode, name) < 3)
+        char *lastSpace = strrchr(line, ' ');
+        if (lastSpace) {
+            char *nl = strchr(lastSpace, '\n');
+            if (nl) *nl = 0;
+            strncpy(name, lastSpace + 1, sizeof(name) - 1);
+        }
+        if (sscanf(line, "%lx-%lx %4s", &start, &end, perms) < 3)
             continue;
         // Only scan readable+writable regions (heap, anonymous)
         if (perms[0] != 'r' || perms[1] != 'w')
