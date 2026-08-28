@@ -71,12 +71,12 @@ struct Il2CppGlobalMetadataHeader {
     int32_t typeDefinitionsOffset;
     int32_t typeDefinitionsCount;
     // Extended header for version >= 19
-    int32_tRGCTXEntriesOffset;
-    int32_tRGCTXEntriesCount;
-    int32_timagesOffset;
-    int32_timagesCount;
-    int32_tassembliesOffset;
-    int32_tassembliesCount;
+    int32_t RGCTXEntriesOffset;
+    int32_t RGCTXEntriesCount;
+    int32_t imagesOffset;
+    int32_t imagesCount;
+    int32_t assembliesOffset;
+    int32_t assembliesCount;
 };
 
 // Simplified - just need first few fields for magic check
@@ -440,7 +440,6 @@ int main(int argc, char* argv[]) {
         // For version 24.1: offset 16 (index 4 as int32)
         // For version 29: offset 16 (index 4 as int32)
         
-        int32_t string_offset_idx = 4; // Simplified - version dependent
         if (version >= 24) {
             // Try to find strings by scanning
             uintptr_t scan_start = metadata_addr + 256; // Skip header
