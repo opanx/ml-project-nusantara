@@ -53,15 +53,20 @@ bool init_egl(uint32_t _screen_x, uint32_t _screen_y, bool log) {
     // The prompt was causing issues on AOSP ROMs
     printf("[+] Creating overlay window...\n");
 
-    // Create overlay window (ALWAYS visible — hide=true causes SIGSEGV on AOSP)
-    ::native_window = android::ANativeWindowCreator::Create("Panxcz v0.1", _screen_x, _screen_y, false);
+    // Create overlay window (hide=true = SECURE window, same as herz-kimmy.sh)
+    printf("[+] Calling Create(hide=true)...\n");
+    ::native_window = android::ANativeWindowCreator::Create("Panxcz v0.1", _screen_x, _screen_y, true);
+    printf("[+] Create returned: %p\n", native_window);
     if (!native_window) {
         printf("[-] ANativeWindowCreator::Create failed\n");
         return false;
     }
+    printf("[+] Acquiring window...\n");
     ANativeWindow_acquire(native_window);
+    printf("[+] Window acquired\n");
 
     // EGL init
+    printf("[+] Getting EGL display...\n");
     display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (display == EGL_NO_DISPLAY) {
         printf("[-] eglGetDisplay error=%u\n", glGetError());
