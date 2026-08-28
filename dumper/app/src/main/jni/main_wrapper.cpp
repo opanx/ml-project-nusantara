@@ -1,7 +1,11 @@
 /*
  * External ELF binary entry point
- * Creates overlay window + EGL + ImGui (no Dobby hook needed)
- * Then runs IL2CPP dumper + menu from Android-LibTool-New
+ * Creates overlay window, then lets existing hack_thread() do its thing
+ * (Dobby hooks eglSwapBuffers → ImGui renders on top)
+ *
+ * Flow:
+ *   main() → createWindow() → hack_thread() → Dobby hooks eglSwapBuffers
+ *   render loop → eglSwapBuffers() → Dobby hook fires → ImGui draws
  */
 
 #include <cstdio>
@@ -18,17 +22,14 @@
 
 // From Android-LibTool-New
 #include "Menu/ImGui.h"
-#include "Il2cpp/Il2cpp.h"
 #include "Includes/Utils.h"
 #include "Includes/Logger.h"
-#include "imgui/imgui.h"
 
-// ANativeWindowCreator
+// ANativeWindowCreator for overlay
 #include "Includes/ANativeWindowCreator.h"
 
-// Forward declarations from existing code
-extern void on_init();
-extern void draw_thread();
+// Forward: hack_thread from Main.cpp
+extern void* hack_thread(void*);
 
 static ANativeWindow* g_window = nullptr;
 static EGLDisplay g_display = EGL_NO_DISPLAY;
@@ -52,7 +53,7 @@ bool createOverlay() {
     if (g_screenW == 0) { g_screenW = 2400; g_screenH = 1080; }
     printf("[+] Screen: %dx%d\n", g_screenW, g_screenH);
 
-    // Create overlay window
+    // Create overlay window (hide=true for security)
     printf("[+] Creating overlay...\n");
     g_window = android::ANativeWindowCreator::Create("Panxcz Tool", g_screenW, g_screenH, true);
     if (!g_window) {
@@ -88,40 +89,20 @@ bool createOverlay() {
     eglMakeCurrent(g_display, g_surface, g_surface, g_context);
     printf("[+] EGL ready\n");
 
-    // Set window for ImGui
+    // Set native window for ImGui backend
     setNativeWindow(g_window);
     glViewport(0, 0, g_screenW, g_screenH);
 
     return true;
 }
 
-// Render loop - calls ImGui draw directly (no Dobby hook)
+// Render loop: eglSwapBuffers triggers Dobby hook → ImGui draws
 void* render_loop(void*) {
-    printf("[+] Render loop starting...\n");
-
+    printf("[+] Render loop started\n");
     while (g_running) {
-        EGLint w, h;
-        eglQuerySurface(g_display, g_surface, EGL_WIDTH, &w);
-        eglQuerySurface(g_display, g_surface, EGL_HEIGHT, &h);
-
-        if (w > 0 && h > 0) {
-            internalDrawMenu(w, h);
-        }
-
         eglSwapBuffers(g_display, g_surface);
         usleep(16000); // ~60fps
     }
-    return nullptr;
-}
-
-// IL2CPP init thread (from on_init in Main.cpp)
-void* init_thread(void*) {
-    printf("[+] Waiting for %s...\n", targetLibName);
-    while (!isLibraryLoaded(targetLibName)) sleep(1);
-    printf("[+] %s loaded!\n", targetLibName);
-
-    on_init();
-    printf("[+] IL2CPP initialized\n");
     return nullptr;
 }
 
@@ -144,22 +125,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Step 2: Setup ImGui (context, font, style)
-    printf("[+] Setup ImGui...\n");
-    setupMenu();
-    printf("[+] ImGui ready\n");
+    // Step 2: Start hack_thread (hooks eglSwapBuffers via Dobby, inits IL2CPP)
+    printf("[+] Starting hack_thread (Dobby hook + IL2CPP init)...\n");
+    pthread_t hack_tid;
+    pthread_create(&hack_tid, nullptr, hack_thread, nullptr);
 
-    // Step 3: Start IL2CPP init in background
-    pthread_t init_tid;
-    pthread_create(&init_tid, nullptr, init_thread, nullptr);
-
-    // Step 4: Start render loop in background
-    pthread_t render_tid;
-    pthread_create(&render_tid, nullptr, render_loop, nullptr);
-
-    // Step 5: Main loop - keep alive
-    printf("[+] Running... Ctrl+C to exit\n");
-    while (g_running) sleep(1);
+    // Step 3: Render loop (eglSwapBuffers → Dobby hook fires → ImGui draws)
+    printf("[+] Render loop (waiting for Dobby hook)...\n");
+    render_loop(nullptr);
 
     // Cleanup
     printf("[+] Cleanup...\n");
