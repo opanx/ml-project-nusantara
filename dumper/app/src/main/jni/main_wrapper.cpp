@@ -18,8 +18,35 @@
 #include <dirent.h>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
-#include <sys/user.h>
 #include <sys/mman.h>
+#include <sys/uio.h>
+#include <elf.h>
+
+// Android aarch64 ptrace compat
+#ifndef PTRACE_GETREGS
+#define PTRACE_GETREGS 0x40000002  // Might not exist on Android
+#endif
+#ifndef PTRACE_SETREGS
+#define PTRACE_SETREGS 0x40000003
+#endif
+
+// Use PTRACE_GETREGSET/SETREGSET on Android
+struct pt_regs {
+    uint64_t regs[31];
+    uint64_t sp;
+    uint64_t pc;
+    uint64_t pstate;
+};
+
+static int ptrace_getregs(pid_t pid, struct pt_regs* regs) {
+    struct iovec iov = { regs, sizeof(struct pt_regs) };
+    return ptrace(PTRACE_GETREGSET, pid, NT_PRSTATUS, &iov);
+}
+
+static int ptrace_setregs(pid_t pid, const struct pt_regs* regs) {
+    struct iovec iov = { (void*)regs, sizeof(struct pt_regs) };
+    return ptrace(PTRACE_SETREGSET, pid, NT_PRSTATUS, &iov);
+}
 #include <dlfcn.h>
 #include <vector>
 #include <string>
@@ -151,8 +178,8 @@ int injectLibrary(pid_t target_pid, const char* lib_path) {
     printf("[+] Attached!\n");
 
     // Save registers
-    struct user_pt_regs orig_regs;
-    if (ptrace(PTRACE_GETREGS, target_pid, nullptr, &orig_regs) < 0) {
+    struct pt_regs orig_regs;
+    if (ptrace_getregs(target_pid, &orig_regs) < 0) {
         printf("[-] PTRACE_GETREGS failed\n");
         ptrace(PTRACE_DETACH, target_pid, nullptr, nullptr);
         return -1;
@@ -166,7 +193,7 @@ int injectLibrary(pid_t target_pid, const char* lib_path) {
     // Use mmap in target process via syscall injection
     // syscall number for mmap on arm64 = 222
     // mmap(addr=0, length=4096, prot=RWX, flags=MAP_PRIVATE|MAP_ANONYMOUS, fd=-1, offset=0)
-    struct user_pt_regs inject_regs = orig_regs;
+    struct pt_regs inject_regs = orig_regs;
     inject_regs.regs[8] = 222;  // __NR_mmap
     inject_regs.regs[0] = 0;    // addr
     inject_regs.regs[1] = 8192; // length
@@ -341,9 +368,9 @@ int injectLibrary(pid_t target_pid, const char* lib_path) {
     printf("[+] Payload written to 0x%lx\n", buf_addr);
 
     // Set registers: PC = shellcode, x0 will be set by shellcode
-    struct user_pt_regs inject_regs2 = orig_regs;
+    struct pt_regs inject_regs2 = orig_regs;
     inject_regs2.pc = buf_addr;  // Start of shellcode
-    if (ptrace(PTRACE_SETREGS, target_pid, nullptr, &inject_regs2) < 0) {
+    if (ptrace_setregs(target_pid, &inject_regs2) < 0) {
         printf("[-] PTRACE_SETREGS failed\n");
         ptrace(PTRACE_DETACH, target_pid, nullptr, nullptr);
         return -1;
@@ -359,8 +386,8 @@ int injectLibrary(pid_t target_pid, const char* lib_path) {
         printf("[+] Injection successful! Shellcode executed.\n");
 
         // Check return value (x0 = dlopen result)
-        struct user_pt_regs result_regs;
-        ptrace(PTRACE_GETREGS, target_pid, nullptr, &result_regs);
+        struct pt_regs result_regs;
+        ptrace_getregs(target_pid, &result_regs);
         printf("[+] dlopen returned: 0x%llx\n", result_regs.regs[0]);
 
         if (result_regs.regs[0] == 0) {
@@ -371,7 +398,7 @@ int injectLibrary(pid_t target_pid, const char* lib_path) {
     }
 
     // Restore registers
-    ptrace(PTRACE_SETREGS, target_pid, nullptr, &orig_regs);
+    ptrace_setregs(target_pid, &orig_regs);
     ptrace(PTRACE_DETACH, target_pid, nullptr, nullptr);
     printf("[+] Detached from PID %d\n", target_pid);
 
