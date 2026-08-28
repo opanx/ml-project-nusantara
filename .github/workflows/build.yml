@@ -46,16 +46,16 @@ jobs:
       - name: Check output
         run: |
           echo "=== Built files ==="
-          find . -name "panxcz" -o -name "libTool.so" | head -10
+          find . -name "panxcz" -o -name "Tool" | head -10
           find . -path "*/arm64-v8a/panxcz" -exec file {} \;
-          find . -path "*/arm64-v8a/libTool.so" -exec file {} \;
+          find . -path "*/arm64-v8a/Tool" -exec file {} \;
 
       - name: Package
         run: |
           mkdir -p release
           cp SRC-MLBB-NUSANTARA/libs/arm64-v8a/panxcz release/ 2>/dev/null || true
           # Rename libTool.so to panxcz_tool executable
-          cp dumper/app/src/main/jni/libs/arm64-v8a/libTool.so release/panxcz_tool 2>/dev/null || true
+          cp dumper/app/src/main/jni/libs/arm64-v8a/Tool release/panxcz_tool 2>/dev/null || true
           chmod 755 release/panxcz release/panxcz_tool 2>/dev/null || true
           cp com.mobile.legends_64bit.cs release/dump.cs
           cp SRC-MLBB-NUSANTARA/jni/src/Includes/Offset.h release/
@@ -69,40 +69,29 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.12
-          name: "MLBB External Tool v1.12"
+          tag_name: v1.13
+          name: "MLBB External Tool v1.13"
           body: |
-            ## MLBB External Tool v1.12
+            ## MLBB External Tool v1.13
             
             ### Binaries
             - `panxcz` — Mod menu (ImGui overlay) + Auto Retri + ESP
-            - `panxcz_dumper` — External IL2CPP dumper (chmod 777)
+            - `panxcz_tool` — Android-LibTool-New compiled as ELF executable (chmod 777)
             
-            ### panxcz_dumper Features
-            - Reads game memory via /proc/pid/mem
-            - Scans for IL2CPP metadata (magic 0xFAB11BAF)
-            - Multi-strategy scan (library sections → anonymous → all)
-            - Outputs dump.cs to /sdcard/Download/
-            - No ImGui, no overlay — pure CLI
-            
-            ### panxcz (Mod Menu)
-            - BattleManager memory scanner
-            - Android 16 support
-            - NDK r21 compatibility
-            
-            ### How to use dumper
-            ```
-            adb push panxcz_dumper /data/local/tmp/
-            adb shell
-            chmod 777 /data/local/tmp/panxcz_dumper
-            su -c /data/local/tmp/panxcz_dumper
-            adb pull /sdcard/Download/dump_com.mobile.legends.cs
-            ```
+            ### panxcz_tool Features (from Android-LibTool-New)
+            - IL2CPP Dumper (dump.cs)
+            - ImGui overlay with full menu
+            - Method tracer, strings viewer, class browser
+            - Frida + Dobby hooking support
+            - Default target: liblogic.so (MLBB)
             
             ### How to use
-            1. Push `panxcz` to device
-            2. Run with root: `su -c ./panxcz`
-            3. Open ImGui menu in-game
+            ```
+            adb push panxcz_tool /data/local/tmp/
+            adb shell
+            chmod 777 /data/local/tmp/panxcz_tool
+            su -c /data/local/tmp/panxcz_tool
+            ```
             
             ### Requirements
             - Rooted Android (arm64)
