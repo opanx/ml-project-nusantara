@@ -591,7 +591,7 @@ void MonsterRetribution() {
     vm_readv(Oneself + OFF_ENTITY_POSITION, &MyPosition, sizeof(MyPosition));
     
     MonsterCount = 0;
-    uintptr_t Showmonster = getPtr641(BattleManager + OFF_SHOW_MONSTERS);
+    uintptr_t Showmonster = getPtr641(g_BattleManager + OFF_SHOW_MONSTERS);
     if (Showmonster != 0) {
         int monsterCount = Read<int>(Showmonster + 0x18);
         uintptr_t monsterDataPtr = ReadPtr(Showmonster + 0x10);
