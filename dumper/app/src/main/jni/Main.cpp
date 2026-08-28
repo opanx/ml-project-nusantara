@@ -449,69 +449,91 @@ void ConfigInit()
     }
 }
 
+extern bool g_isExternalBinary;
+
 void on_init()
 {
     LOGD(__FUNCTION__);
+
+    // Non-blocking wait: external binary may never have the target lib
+    int waitCount = 0;
     while (!isLibraryLoaded(targetLibName))
     {
+        if (g_isExternalBinary) {
+            if (waitCount++ > 10) {
+                LOGI("External mode: %s not found, continuing without IL2CPP", (const char *)targetLibName);
+                break;
+            }
+        } else {
+            waitCount = 0; // internal: wait forever
+        }
         sleep(1);
     }
 
-    LOGI("%s has been loaded", (const char *)targetLibName);
-
-    Il2cpp::Init();
-    Il2cpp::EnsureAttached();
-
-    Keyboard::Init();
-
-    initialStyle = ImGui::GetStyle();
-    ConfigInit();
-    selectedScale = ConfigGet<int>("selectedScale", selectedScale);
-    if (selectedScale < 0 || selectedScale >= scaleFactors.size())
-    {
-        selectedScale = 3;
-        ConfigSet("selectedScale", selectedScale);
+    bool libLoaded = isLibraryLoaded(targetLibName);
+    if (libLoaded) {
+        LOGI("%s has been loaded", (const char *)targetLibName);
+    } else if (g_isExternalBinary) {
+        LOGI("External mode: %s not in this process — ImGui menu only", (const char *)targetLibName);
     }
-    selectedTheme = ConfigGet<int>("selectedTheme", selectedTheme);
-    if (selectedTheme < 0 || selectedTheme >= possibleThemes.size())
-    {
-        selectedTheme = 0;
-        ConfigSet("selectedTheme", selectedTheme);
-    }
-    // Load target library preset from config
-    selectedGamePreset = ConfigGet<int>("selectedGamePreset", 0);
-    if (selectedGamePreset < 0 || selectedGamePreset >= numGamePresets)
-    {
-        selectedGamePreset = 0;
-        ConfigSet("selectedGamePreset", 0);
-    }
-    if (strlen(gamePresets[selectedGamePreset].libName) > 0) {
-        setTargetLibName(gamePresets[selectedGamePreset].libName);
-    }
-    doChangeTheme = true;
-    doChangeScale = true;
 
-    LOGD("HOOKING...");
+    if (libLoaded) {
+        Il2cpp::Init();
+        Il2cpp::EnsureAttached();
+
+        Keyboard::Init();
+
+        initialStyle = ImGui::GetStyle();
+        ConfigInit();
+        selectedScale = ConfigGet<int>("selectedScale", selectedScale);
+        if (selectedScale < 0 || selectedScale >= scaleFactors.size())
+        {
+            selectedScale = 3;
+            ConfigSet("selectedScale", selectedScale);
+        }
+        selectedTheme = ConfigGet<int>("selectedTheme", selectedTheme);
+        if (selectedTheme < 0 || selectedTheme >= possibleThemes.size())
+        {
+            selectedTheme = 0;
+            ConfigSet("selectedTheme", selectedTheme);
+        }
+        // Load target library preset from config
+        selectedGamePreset = ConfigGet<int>("selectedGamePreset", 0);
+        if (selectedGamePreset < 0 || selectedGamePreset >= numGamePresets)
+        {
+            selectedGamePreset = 0;
+            ConfigSet("selectedGamePreset", 0);
+        }
+        if (strlen(gamePresets[selectedGamePreset].libName) > 0) {
+            setTargetLibName(gamePresets[selectedGamePreset].libName);
+        }
+        doChangeTheme = true;
+        doChangeScale = true;
+
+        LOGD("HOOKING...");
 
 #ifndef LIB_INPUT
-    Unity::HookInput();
+        Unity::HookInput();
 #endif
 
-    g_Image = Il2cpp::GetAssembly("Assembly-CSharp")->getImage();
-    auto images = Il2cpp::GetImages();
-    Tool::Init(g_Image, images);
+        g_Image = Il2cpp::GetAssembly("Assembly-CSharp")->getImage();
+        auto images = Il2cpp::GetImages();
+        Tool::Init(g_Image, images);
 
-    for (auto image : images)
-    {
-        for (auto klass : image->getClasses())
+        for (auto image : images)
         {
-            for (auto m : klass->getMethods())
+            for (auto klass : image->getClasses())
             {
-                if (!m->methodPointer)
-                    continue;
-                g_Methods.emplace_back(m);
+                for (auto m : klass->getMethods())
+                {
+                    if (!m->methodPointer)
+                        continue;
+                    g_Methods.emplace_back(m);
+                }
             }
         }
+    } else {
+        LOGI("Skipping IL2CPP init — no target library in external mode");
     }
     LOGD("%zu methods", g_Methods.size());
     LOGD("SORTING");
