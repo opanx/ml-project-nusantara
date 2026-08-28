@@ -30,9 +30,9 @@ LOCAL_LDLIBS := \
     -lEGL \
     -lGLESv3 \
     -ldl \
-
     -lz \
     -lm \
+    -latomic \
     -lc
 
 LOCAL_ARM_MODE := arm
