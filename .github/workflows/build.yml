@@ -56,19 +56,19 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.10
-          name: "MLBB External Tool v1.10"
+          tag_name: v1.11
+          name: "MLBB External Tool v1.11"
           body: |
-            ## MLBB External Tool v1.10
+            ## MLBB External Tool v1.11
             
             Retribution auto + ESP for Mobile Legends.
             
             ### Changes
-            - **Multi-process fallback** — tries UnityKillsMe, then main process
-            - **Multi-lib fallback** — tries libcsharp.so, then liblogic.so
-            - **Debug logging** — verbose pointer chain debug on startup
-            - Null checks on BattleManager chain (prevents silent failures)
-            - Android 16 support (patchesTable v16)
+            - **BattleManager memory scanner** — auto-finds correct offset at runtime
+            - Validates ShowPlayers, ShowMonsters, LocalPlayerShow pointers
+            - Re-scans when BattleManager becomes invalid
+            - Multi-process/lib fallback
+            - Android 16 support
             - NDK r21 compatibility
             
             ### How to use
