@@ -8,20 +8,29 @@ include $(MY_ROOT_PATH)/Frida/Android.mk
 LOCAL_PATH := $(MY_ROOT_PATH)
 
 # ============================================================
-# SINGLE MODULE: libPanxczOverlay.so (everything in one .so)
+# MODULE 1: PanxczTool (ELF executable — injector + process list)
 # ============================================================
 include $(CLEAR_VARS)
+LOCAL_MODULE := PanxczTool
+LOCAL_CFLAGS := -w -Wno-error=format-security -fpermissive -fexceptions
+LOCAL_CPPFLAGS := -w -std=c++17 -fpermissive -fexceptions
+LOCAL_LDFLAGS += -Wl,--gc-sections
+LOCAL_LDLIBS := -llog -landroid -ldl -lz -lm -lc
+LOCAL_ARM_MODE := arm
+LOCAL_C_INCLUDES += $(MY_ROOT_PATH)
+LOCAL_SRC_FILES := main_wrapper.cpp
+include $(BUILD_EXECUTABLE)
 
+# ============================================================
+# MODULE 2: PanxczOverlay (.so — loaded into game by PanxczTool)
+# ============================================================
+include $(CLEAR_VARS)
 LOCAL_MODULE := PanxczOverlay
-
 LOCAL_CFLAGS := -w -Wno-error=format-security -fvisibility=hidden -fpermissive -fexceptions
 LOCAL_CPPFLAGS := -w -std=c++17 -fvisibility=hidden -fpermissive -fexceptions -DUSE_FRIDA
-
 LOCAL_LDFLAGS += -Wl,--gc-sections -shared
 LOCAL_LDLIBS := -llog -landroid -lEGL -lGLESv3 -ldl -lz -lm -latomic -lc
-
 LOCAL_ARM_MODE := arm
-
 LOCAL_C_INCLUDES += $(MY_ROOT_PATH)
 LOCAL_C_INCLUDES += $(MY_ROOT_PATH)/imgui
 LOCAL_C_INCLUDES += $(MY_ROOT_PATH)/asmjit
@@ -29,9 +38,7 @@ LOCAL_C_INCLUDES += $(MY_ROOT_PATH)/Dobby
 LOCAL_C_INCLUDES += $(MY_ROOT_PATH)/Dobby/include
 LOCAL_C_INCLUDES += $(MY_ROOT_PATH)/Frida/gumpp
 LOCAL_C_INCLUDES += $(MY_ROOT_PATH)/Frida/$(TARGET_ARCH_ABI)
-
 LOCAL_STATIC_LIBRARIES := asmjit dobby frida_gum
-
 LOCAL_SRC_FILES := \
     overlay_loader.cpp \
     Main.cpp \
@@ -69,5 +76,4 @@ LOCAL_SRC_FILES := \
     Frida/gumpp/interceptor.cpp \
     Frida/gumpp/invocationlistener.cpp \
     Frida/gumpp/returnaddress.cpp
-
 include $(BUILD_SHARED_LIBRARY)

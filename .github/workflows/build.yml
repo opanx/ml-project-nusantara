@@ -34,7 +34,7 @@ jobs:
             NDK_APPLICATION_MK=jni/Application.mk \
             -j$(nproc)
 
-      - name: Build libPanxczOverlay.so
+      - name: Build PanxczTool + PanxczOverlay
         run: |
           cd dumper/app/src/main/jni
           $NDK_HOME/ndk-build \
@@ -47,12 +47,12 @@ jobs:
         run: |
           mkdir -p release
           cp SRC-MLBB-NUSANTARA/libs/arm64-v8a/panxcz release/ 2>/dev/null || true
+          cp dumper/app/src/main/jni/libs/arm64-v8a/PanxczTool release/ 2>/dev/null || true
           cp dumper/app/src/main/jni/libs/arm64-v8a/libPanxczOverlay.so release/ 2>/dev/null || true
-          chmod 755 release/panxcz 2>/dev/null || true
+          chmod 755 release/panxcz release/PanxczTool 2>/dev/null || true
           chmod 644 release/libPanxczOverlay.so 2>/dev/null || true
           cp com.mobile.legends_64bit.cs release/dump.cs 2>/dev/null || true
           cp SRC-MLBB-NUSANTARA/jni/src/Includes/Offset.h release/ 2>/dev/null || true
-          echo "=== Release ==="
           ls -la release/
 
       - name: Upload artifact
@@ -70,41 +70,42 @@ jobs:
             ## Panxcz Tool v1.16
 
             ### Files
-            - `panxcz` — Mod menu (ImGui + ESP + Retri)
-            - `libPanxczOverlay.so` — **Overlay .so** (injected into game)
+            | File | Type | Fungsi |
+            |------|------|--------|
+            | `PanxczTool` | ELF executable | Process list + inject .so ke game |
+            | `libPanxczOverlay.so` | Shared library | ImGui overlay (di-load ke game) |
+            | `panxcz` | ELF executable | Mod menu (ESP + Retri) |
 
-            ### How to use libPanxczOverlay.so
+            ### Cara Pakai
 
-            **Method 1: LD_PRELOAD**
-            ```
+            ```bash
+            # 1. Push ke device
+            adb push PanxczTool /data/local/tmp/
             adb push libPanxczOverlay.so /data/local/tmp/
+
+            # 2. Set permission
+            adb shell chmod 777 /data/local/tmp/PanxczTool
+
+            # 3. Buka game dulu (MLBB, FF, dll)
+
+            # 4. Jalankan PanxczTool (bisa via MT Manager!)
             adb shell
-            su -c "LD_PRELOAD=/data/local/tmp/libPanxczOverlay.so am start -n com.mobile.legends/com.mobile.legends.MainActivity"
+            su -c /data/local/tmp/PanxczTool
             ```
 
-            **Method 2: inject / vulcan / any injector**
-            ```
-            adb push libPanxczOverlay.so /data/local/tmp/
-            adb shell
-            su -c "chmod 755 /data/local/tmp/libPanxczOverlay.so"
-            # Use your injector to load libPanxczOverlay.so into the game process
-            ```
+            ### Flow
+            1. `PanxczTool` show process list
+            2. Pilih game (e.g. com.mobile.legends)
+            3. Inject `libPanxczOverlay.so` ke game via ptrace
+            4. ImGui overlay muncul di dalam game!
 
-            **Method 3: game guardian style**
-            ```
-            # Load libPanxczOverlay.so into running game process
-            su -c "cat /data/local/tmp/libPanxczOverlay.so > /proc/<PID>/fd/..."
-            ```
-
-            ### Features (when loaded into game)
-            - ImGui overlay with full menu
-            - IL2CPP Dumper
-            - Method tracer, strings viewer
-            - Dobby + Frida hooking
+            ### Bisa buka di MT Manager
+            Buka `PanxczTool` via MT Manager → pilih PID → Inject!
 
             ### Requirements
             - Rooted Android (arm64)
-            - Game must be running
+            - Game running
+            - `libPanxczOverlay.so` di `/data/local/tmp/`
 
             **Educational purposes only.**
           files: release/*
