@@ -136,32 +136,35 @@ bool mem_addr_virtophy(unsigned long vaddr)
 
     return true;
 }
-int pvm(uintptr_t address, void* buffer,int size) {
+int pvm(uintptr_t address, void* buffer, int size) {
+    if (pid < 0 || size <= 0) return 0;
     struct iovec local[1];
     struct iovec remote[1];
-
     local[0].iov_base = (void*)buffer;
     local[0].iov_len = size;
     remote[0].iov_base = (void*)address;
     remote[0].iov_len = size;
-    ssize_t bytes = syscall(SYS_process_vm_readv,pid, local, 1, remote, 1, 0);
+    ssize_t bytes = syscall(SYS_process_vm_readv, pid, local, 1, remote, 1, 0);
     return bytes == size;
 }
-// Process reads and writes memory
+// Process reads and writes memory (FIXED: use correct syscall for read vs write)
 bool pvm(void *address, void *buffer, size_t size, bool iswrite)
 {
+	if (pid < 0) return false;
+	if (size == 0) return true;
 	struct iovec local[1];
 	struct iovec remote[1];
 	local[0].iov_base = buffer;
 	local[0].iov_len = size;
 	remote[0].iov_base = address;
 	remote[0].iov_len = size;
-	if (pid < 0)
-	{
-		return false;
+	ssize_t bytes;
+	if (iswrite) {
+		bytes = syscall(SYS_process_vm_writev, pid, local, 1, remote, 1, 0);
+	} else {
+		bytes = syscall(SYS_process_vm_readv, pid, local, 1, remote, 1, 0);
 	}
-	ssize_t bytes = syscall(SYS_process_vm_readv, pid, local, 1, remote, 1, 0, iswrite);
-	return bytes == size;
+	return bytes == (ssize_t)size;
 }
 
 // Read memory
