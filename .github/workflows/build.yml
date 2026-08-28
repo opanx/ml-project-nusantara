@@ -57,10 +57,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0
-          name: "MLBB External Tool v1.0"
+          tag_name: v1.1
+          name: "MLBB External Tool v1.1"
           body: |
-            ## MLBB External Tool v1.0
+            ## MLBB External Tool v1.1
             
             Retribution auto + ESP for Mobile Legends.
             
@@ -80,7 +80,7 @@ jobs:
             - Buffs Only
             
             ### How to use
-            1. Push `rsa` binary to device
+            1. Push `panxcz` binary to device
             2. Run with root: `su -c ./rsa`
             3. Open ImGui menu in-game
             
