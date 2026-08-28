@@ -20,10 +20,10 @@ jobs:
       - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
 
-      - name: Install NDK
+      - name: Install NDK r21 (matches herz-kimmy.sh compatibility)
         run: |
-          sdkmanager "ndk;25.2.9519653"
-          echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+          sdkmanager "ndk;21.4.7075529"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
 
       - name: Build panxcz (ELF binary)
         run: |
@@ -38,8 +38,7 @@ jobs:
         run: |
           echo "=== Built files ==="
           find . -name "panxcz" -o -name "libpanxcz.so" | head -5
-          file SRC-MLBB-NUSANTARA/libs/arm64-v8a/panxcz 2>/dev/null || echo "Checking other paths..."
-          find . -path "*/arm64-v8a/rsa" -exec file {} \;
+          find . -path "*/arm64-v8a/panxcz" -exec file {} \;
 
       - name: Package
         run: |
@@ -57,36 +56,24 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.7
-          name: "MLBB External Tool v1.7"
+          tag_name: v1.8
+          name: "MLBB External Tool v1.8"
           body: |
-            ## MLBB External Tool v1.7
+            ## MLBB External Tool v1.8
             
             Retribution auto + ESP for Mobile Legends.
             
-            ### Features
-            - **Auto Retri** — Priority-based retribution (Lord > Turtle > Buff)
-            - **ESP Line** — Enemy line + hero icon + health
-            - **Distance & Name** — Show distance + hero name
-            - **Minimap ESP** — Enemy on minimap
-            - **Kill Steal Alert** — Alert when monster is retri-able
-            - **KDA Display** — Live K/D/A overlay
-            - **Room Info** — Player info in room
-            
-            ### Retri Priority Modes
-            - All Targets (default)
-            - Lord Only
-            - Lord + Turtle
-            - Buffs Only
+            ### Changes
+            - **NDK r21** — built with same NDK era as herz-kimmy.sh
+            - Fixes SIGSEGV on AOSP ROMs (ANativeWindowCreator compatibility)
+            - Black Obsidian ImGui theme
+            - Auto Retri with priority modes
+            - ESP, KDA, Kill Steal Alert
             
             ### How to use
-            1. Push `panxcz` binary to device
+            1. Push `panxcz` to device
             2. Run with root: `su -c ./panxcz`
             3. Open ImGui menu in-game
-            
-            ### Offsets
-            Offsets from dump.cs (MLBB v2.1.95).
-            Update `Offset.h` when game updates.
             
             ### Requirements
             - Rooted Android (arm64)
