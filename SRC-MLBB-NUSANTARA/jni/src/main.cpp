@@ -105,7 +105,8 @@ struct String {
 
 
 // ======================== BATTLEMANAGER SCANNER ========================
-// Scans libcsharp.so data section for valid BattleManager pointer
+// Scans ALL rw memory regions for valid BattleManager pointer
+// (IL2CPP static fields are in anonymous heap, not library .data)
 uintptr_t FindBattleManager() {
     char map[128];
     char line[512];
@@ -116,115 +117,126 @@ uintptr_t FindBattleManager() {
         return 0;
     }
 
-    printf("[+] Scanning for BattleManager...\n");
+    printf("[+] Scanning for BattleManager (all rw regions)...\n");
     uintptr_t result = 0;
+    int regionsScanned = 0;
     int candidates = 0;
+
+    // Collect all rw regions first
+    struct Region { uintptr_t start; uintptr_t end; };
+    std::vector<Region> rwRegions;
 
     while (fgets(line, sizeof(line), f)) {
         uintptr_t start, end;
-        char perms[5], dev[11], name[256] = {0};
+        char perms[5];
         unsigned long inode = 0;
-        if (sscanf(line, "%lx-%lx %4s %*s %*s %lu %s", &start, &end, perms, &inode, name) < 4)
+        char name[256] = {0};
+        if (sscanf(line, "%lx-%lx %4s %*s %*s %lu %255[^
+]", &start, &end, perms, &inode, name) < 3)
             continue;
-
-        if (!strstr(name, "libcsharp.so") && !strstr(name, "liblogic.so"))
-            continue;
-
+        // Only scan readable+writable regions (heap, anonymous)
         if (perms[0] != 'r' || perms[1] != 'w')
             continue;
+        // Skip small regions (< 64KB)
+        if (end - start < 0x10000) continue;
+        // Prioritize: anonymous > libcsharp.so > liblogic.so > others
+        rwRegions.push_back({start, end});
+    }
+    fclose(f);
 
-        printf("[+] Scanning region: 0x%lx-0x%lx (%s)\n", start, end, name);
+    printf("[+] Found %zu rw regions to scan\n", rwRegions.size());
 
-        for (uintptr_t addr = start; addr < end - 0x100; addr += 8) {
+    for (auto &region : rwRegions) {
+        regionsScanned++;
+        uintptr_t regionSize = region.end - region.start;
+
+        for (uintptr_t addr = region.start; addr < region.end - 0x100; addr += 8) {
             uintptr_t ptr = 0;
             if (!pvm((void*)addr, &ptr, 8, false))
                 continue;
 
-            if (ptr < 0x10000 || ptr > 0x7FFFFFFFFFFF)
-                continue;
+            if (ptr < 0x10000 || ptr > 0x7FFFFFFFFFFF) continue;
+            if (ptr == addr) continue; // skip self-references
 
             // Check if ptr points to valid memory
             uint32_t checkVal = 0;
-            if (!pvm((void*)ptr, &checkVal, 4, false))
-                continue;
-            if (checkVal == 0)
-                continue;
+            if (!pvm((void*)ptr, &checkVal, 4, false)) continue;
+            if (checkVal == 0) continue;
 
             // Validate BattleManager structure:
-            // m_ShowPlayers at 0x78 (List pointer)
+            // m_ShowPlayers at 0x78
             uintptr_t showPlayers = 0;
-            if (!pvm((void*)(ptr + OFF_SHOW_PLAYERS), &showPlayers, 8, false))
-                continue;
-            if (showPlayers < 0x10000 || showPlayers > 0x7FFFFFFFFFFF)
-                continue;
+            if (!pvm((void*)(ptr + OFF_SHOW_PLAYERS), &showPlayers, 8, false)) continue;
+            if (showPlayers < 0x10000 || showPlayers > 0x7FFFFFFFFFFF) continue;
 
             // List count at showPlayers + 0x18
             uint32_t count = 0;
-            if (!pvm((void*)(showPlayers + 0x18), &count, 4, false))
-                continue;
-            if (count == 0 || count > 20)
-                continue;
+            if (!pvm((void*)(showPlayers + 0x18), &count, 4, false)) continue;
+            if (count == 0 || count > 20) continue;
 
             // List data at showPlayers + 0x10
             uintptr_t dataPtr = 0;
-            if (!pvm((void*)(showPlayers + 0x10), &dataPtr, 8, false))
-                continue;
-            if (dataPtr < 0x10000 || dataPtr > 0x7FFFFFFFFFFF)
-                continue;
+            if (!pvm((void*)(showPlayers + 0x10), &dataPtr, 8, false)) continue;
+            if (dataPtr < 0x10000 || dataPtr > 0x7FFFFFFFFFFF) continue;
 
             // Validate first player pointer
             uintptr_t firstPlayer = 0;
-            if (!pvm((void*)(dataPtr + 0x20), &firstPlayer, 8, false))
-                continue;
-            if (firstPlayer < 0x10000 || firstPlayer > 0x7FFFFFFFFFFF)
-                continue;
+            if (!pvm((void*)(dataPtr + 0x20), &firstPlayer, 8, false)) continue;
+            if (firstPlayer < 0x10000 || firstPlayer > 0x7FFFFFFFFFFF) continue;
 
             // Validate m_ShowMonsters at 0x80
             uintptr_t showMonsters = 0;
-            if (!pvm((void*)(ptr + OFF_SHOW_MONSTERS), &showMonsters, 8, false))
-                continue;
-            if (showMonsters < 0x10000 || showMonsters > 0x7FFFFFFFFFFF)
-                continue;
+            if (!pvm((void*)(ptr + OFF_SHOW_MONSTERS), &showMonsters, 8, false)) continue;
+            if (showMonsters < 0x10000 || showMonsters > 0x7FFFFFFFFFFF) continue;
 
             uint32_t monsterCount = 0;
-            if (!pvm((void*)(showMonsters + 0x18), &monsterCount, 4, false))
-                continue;
-            if (monsterCount > 100)
-                continue;
+            if (!pvm((void*)(showMonsters + 0x18), &monsterCount, 4, false)) continue;
+            if (monsterCount > 100) continue;
 
             candidates++;
-            printf("[+] Candidate %d @ 0x%lx: ShowPlayers=0x%lx (count=%u) ShowMonsters=0x%lx (count=%u)\n",
-                   candidates, ptr, showPlayers, count, showMonsters, monsterCount);
+            if (candidates <= 3) {
+                printf("[+] Candidate %d @ 0x%lx (region 0x%lx-0x%lx): Players=%u Monsters=%u\n",
+                       candidates, ptr, region.start, region.end, count, monsterCount);
+            }
 
             // Validate m_LocalPlayerShow at 0x50
             uintptr_t localPlayer = 0;
             if (pvm((void*)(ptr + OFF_LOCAL_PLAYER_SHOW), &localPlayer, 8, false)) {
                 if (localPlayer > 0x10000 && localPlayer < 0x7FFFFFFFFFFF) {
-                    // Check if local player has a valid hero name at 0x8d8
+                    // Check hero name at 0x8d8
                     uintptr_t heroName = 0;
                     if (pvm((void*)(localPlayer + OFF_PLAYER_HERO_NAME), &heroName, 8, false)) {
                         if (heroName > 0x10000 && heroName < 0x7FFFFFFFFFFF) {
-                            printf("[+] FOUND BattleManager @ 0x%lx (LocalPlayer=0x%lx)\n", ptr, localPlayer);
-                            result = ptr;
-                            break;
+                            // Verify hero name string is readable
+                            uint32_t strLen = 0;
+                            if (pvm((void*)(heroName + 0x10), &strLen, 4, false) && strLen > 0 && strLen < 100) {
+                                printf("[+] FOUND BattleManager @ 0x%lx (Players=%u LocalPlayer=0x%lx)\n",
+                                       ptr, count, localPlayer);
+                                result = ptr;
+                                break;
+                            }
                         }
                     }
                 }
             }
 
-            // If we have candidates but no perfect match, take the first good one
-            if (candidates == 1 && !result) {
+            // Take first valid candidate if no perfect match
+            if (!result && candidates == 1) {
                 result = ptr;
                 printf("[+] Using first valid candidate @ 0x%lx\n", ptr);
             }
         }
         if (result) break;
+        if (regionsScanned % 20 == 0) {
+            printf("[+] Scanned %d/%zu regions, %d candidates...\n",
+                   regionsScanned, rwRegions.size(), candidates);
+        }
     }
-    fclose(f);
 
     if (!result && candidates > 0) {
         printf("[!] Found %d candidates but none passed all checks\n", candidates);
     }
+    printf("[+] Scan complete: %d regions, %d candidates\n", regionsScanned, candidates);
     return result;
 }
 
