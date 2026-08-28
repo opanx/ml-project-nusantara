@@ -25,7 +25,7 @@ jobs:
           sdkmanager "ndk;25.2.9519653"
           echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
 
-      - name: Build rsa (ELF binary)
+      - name: Build panxcz (ELF binary)
         run: |
           cd SRC-MLBB-NUSANTARA
           $NDK_HOME/ndk-build \
@@ -37,14 +37,14 @@ jobs:
       - name: Check output
         run: |
           echo "=== Built files ==="
-          find . -name "rsa" -o -name "librsa.so" | head -5
-          file SRC-MLBB-NUSANTARA/libs/arm64-v8a/rsa 2>/dev/null || echo "Checking other paths..."
+          find . -name "panxcz" -o -name "libpanxcz.so" | head -5
+          file SRC-MLBB-NUSANTARA/libs/arm64-v8a/panxcz 2>/dev/null || echo "Checking other paths..."
           find . -path "*/arm64-v8a/rsa" -exec file {} \;
 
       - name: Package
         run: |
           mkdir -p release
-          cp SRC-MLBB-NUSANTARA/libs/arm64-v8a/rsa release/ 2>/dev/null || true
+          cp SRC-MLBB-NUSANTARA/libs/arm64-v8a/panxcz release/ 2>/dev/null || true
           cp com.mobile.legends_64bit.cs release/dump.cs
           cp SRC-MLBB-NUSANTARA/jni/src/Includes/Offset.h release/
 
