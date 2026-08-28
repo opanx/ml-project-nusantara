@@ -292,11 +292,15 @@ struct Il2CppFieldDefinition {
 // ============================================================
 int main(int argc, char* argv[]) {
     const char* package = "com.mobile.legends";
+    const char* target_lib = "liblogic.so";  // MLBB default
     if (argc > 1) package = argv[1];
+    if (argc > 2) target_lib = argv[2];
     
     printf("============================================\n");
     printf("  Panxcz External IL2CPP Dumper v1.0\n");
     printf("  Package: %s\n", package);
+    printf("  Target:  %s\n", target_lib);
+    printf("  Usage: %s [package] [lib]\n", argv[0]);
     printf("============================================\n\n");
     
     // Find game process
@@ -318,9 +322,10 @@ int main(int argc, char* argv[]) {
     }
     printf("[+] Memory fd opened\n");
     
-    // Find libcsharp.so or libil2cpp.so
-    printf("[+] Searching for game library...\n");
-    auto libs = get_maps("libcsharp.so");
+    // Find game library
+    printf("[+] Searching for %s...\n", target_lib);
+    auto libs = get_maps(target_lib);
+    if (libs.empty()) libs = get_maps("libcsharp.so");
     if (libs.empty()) libs = get_maps("libil2cpp.so");
     if (libs.empty()) libs = get_maps("liblogic.so");
     
