@@ -7,33 +7,39 @@ include $(MY_ROOT_PATH)/Frida/Android.mk
 
 LOCAL_PATH := $(MY_ROOT_PATH) # Reset for local path
 
+# ============================================================
+# MODULE 1: PanxczTool (ELF executable — injector + process list)
+# ============================================================
 include $(CLEAR_VARS)
 
-LOCAL_MODULE := Tool
+LOCAL_MODULE := PanxczTool
 
-LOCAL_CFLAGS := -w -s -Wno-error=format-security -fvisibility=hidden -fpermissive -fexceptions
-
-LOCAL_CPPFLAGS := -w -s -Wno-error=format-security \
-    -fvisibility=hidden \
-    -Werror \
-    -std=c++17 \
-    -Wno-error=c++11-narrowing \
-    -fpermissive \
-    -Wall \
-    -fexceptions \
-    -DUSE_FRIDA
-
+LOCAL_CFLAGS := -w -Wno-error=format-security -fpermissive -fexceptions
+LOCAL_CPPFLAGS := -w -std=c++17 -fpermissive -fexceptions
 LOCAL_LDFLAGS += -Wl,--gc-sections
-LOCAL_LDLIBS := \
-    -llog \
-    -landroid \
-    -lEGL \
-    -lGLESv3 \
-    -ldl \
-    -lz \
-    -lm \
-    -latomic \
-    -lc
+LOCAL_LDLIBS := -llog -landroid -ldl -lz -lm -lc
+
+LOCAL_ARM_MODE := arm
+
+LOCAL_C_INCLUDES += $(MY_ROOT_PATH)
+
+LOCAL_SRC_FILES := \
+    main_wrapper.cpp
+
+include $(BUILD_EXECUTABLE)
+
+# ============================================================
+# MODULE 2: PanxczOverlay (.so — injected into game process)
+# ============================================================
+include $(CLEAR_VARS)
+
+LOCAL_MODULE := PanxczOverlay
+
+LOCAL_CFLAGS := -w -Wno-error=format-security -fvisibility=hidden -fpermissive -fexceptions
+LOCAL_CPPFLAGS := -w -std=c++17 -fvisibility=hidden -fpermissive -fexceptions -DUSE_FRIDA
+
+LOCAL_LDFLAGS += -Wl,--gc-sections -shared
+LOCAL_LDLIBS := -llog -landroid -lEGL -lGLESv3 -ldl -lz -lm -latomic -lc
 
 LOCAL_ARM_MODE := arm
 
@@ -48,7 +54,7 @@ LOCAL_C_INCLUDES += $(MY_ROOT_PATH)/Frida/$(TARGET_ARCH_ABI)
 LOCAL_STATIC_LIBRARIES := asmjit dobby frida_gum
 
 LOCAL_SRC_FILES := \
-    main_wrapper.cpp \
+    overlay_loader.cpp \
     Main.cpp \
     Menu/ImGui.cpp \
     Tool/Keyboard.cpp \
@@ -85,4 +91,4 @@ LOCAL_SRC_FILES := \
     Frida/gumpp/invocationlistener.cpp \
     Frida/gumpp/returnaddress.cpp
 
-include $(BUILD_EXECUTABLE)
+include $(BUILD_SHARED_LIBRARY)

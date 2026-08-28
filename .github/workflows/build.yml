@@ -20,12 +20,12 @@ jobs:
       - name: Setup Android SDK + NDK
         uses: android-actions/setup-android@v3
 
-      - name: Install NDK r21 (matches herz-kimmy.sh compatibility)
+      - name: Install NDK r21
         run: |
           sdkmanager "ndk;21.4.7075529"
           echo "NDK_HOME=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
 
-      - name: Build panxcz (ELF binary)
+      - name: Build panxcz (Mod menu ELF)
         run: |
           cd SRC-MLBB-NUSANTARA
           $NDK_HOME/ndk-build \
@@ -34,7 +34,7 @@ jobs:
             NDK_APPLICATION_MK=jni/Application.mk \
             -j$(nproc)
 
-      - name: Build panxcz_dumper (External from Android-LibTool-New)
+      - name: Build PanxczTool + PanxczOverlay
         run: |
           cd dumper/app/src/main/jni
           $NDK_HOME/ndk-build \
@@ -46,19 +46,23 @@ jobs:
       - name: Check output
         run: |
           echo "=== Built files ==="
-          find . -name "panxcz" -o -name "Tool" | head -10
+          find . -name "panxcz" -o -name "PanxczTool" -o -name "PanxczOverlay" | head -10
           find . -path "*/arm64-v8a/panxcz" -exec file {} \;
-          find . -path "*/arm64-v8a/Tool" -exec file {} \;
+          find . -path "*/arm64-v8a/PanxczTool" -exec file {} \;
+          find . -path "*/arm64-v8a/libPanxczOverlay.so" -exec file {} \;
 
       - name: Package
         run: |
           mkdir -p release
           cp SRC-MLBB-NUSANTARA/libs/arm64-v8a/panxcz release/ 2>/dev/null || true
-          # Rename libTool.so to panxcz_tool executable
-          cp dumper/app/src/main/jni/libs/arm64-v8a/Tool release/panxcz_tool 2>/dev/null || true
-          chmod 755 release/panxcz release/panxcz_tool 2>/dev/null || true
-          cp com.mobile.legends_64bit.cs release/dump.cs
-          cp SRC-MLBB-NUSANTARA/jni/src/Includes/Offset.h release/
+          cp dumper/app/src/main/jni/libs/arm64-v8a/PanxczTool release/ 2>/dev/null || true
+          cp dumper/app/src/main/jni/libs/arm64-v8a/libPanxczOverlay.so release/ 2>/dev/null || true
+          chmod 755 release/panxcz release/PanxczTool 2>/dev/null || true
+          chmod 644 release/libPanxczOverlay.so 2>/dev/null || true
+          cp com.mobile.legends_64bit.cs release/dump.cs 2>/dev/null || true
+          cp SRC-MLBB-NUSANTARA/jni/src/Includes/Offset.h release/ 2>/dev/null || true
+          echo "=== Release contents ==="
+          ls -la release/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -72,31 +76,45 @@ jobs:
           tag_name: v1.16
           name: "MLBB External Tool v1.16"
           body: |
-            ## MLBB External Tool v1.13
-            
+            ## Panxcz Tool v1.16 - ELF Injector + ImGui Overlay
+
             ### Binaries
             - `panxcz` — Mod menu (ImGui overlay) + Auto Retri + ESP
-            - `panxcz_tool` — Android-LibTool-New compiled as ELF executable (chmod 777)
-            
+            - `PanxczTool` — **ELF Injector** (process selector + ptrace inject)
+            - `libPanxczOverlay.so` — **Overlay library** (injected into game via PanxczTool)
+
+            ### How it works (like GameGuardian)
+            1. Run `PanxczTool` → shows process list
+            2. Select game process (e.g. Mobile Legends)
+            3. Tool injects `libPanxczOverlay.so` into the game via ptrace
+            4. ImGui overlay appears inside the game!
+
+            ### Quick start
+            ```
+            # Push both files
+            adb push PanxczTool /data/local/tmp/
+            adb push libPanxczOverlay.so /data/local/tmp/
+
+            # Set permissions
+            adb shell chmod 777 /data/local/tmp/PanxczTool
+            adb shell chmod 644 /data/local/tmp/libPanxczOverlay.so
+
+            # Run (game must be open!)
+            adb shell
+            su -c /data/local/tmp/PanxczTool
+            ```
+
             ### panxcz_tool Features (from Android-LibTool-New)
             - IL2CPP Dumper (dump.cs)
             - ImGui overlay with full menu
             - Method tracer, strings viewer, class browser
             - Frida + Dobby hooking support
-            - Default target: liblogic.so (MLBB)
-            
-            ### How to use
-            ```
-            adb push panxcz_tool /data/local/tmp/
-            adb shell
-            chmod 777 /data/local/tmp/panxcz_tool
-            su -c /data/local/tmp/panxcz_tool
-            ```
-            
+
             ### Requirements
             - Rooted Android (arm64)
-            - MLBB running
-            
+            - Game running
+            - Both `PanxczTool` and `libPanxczOverlay.so` in `/data/local/tmp/`
+
             **Educational purposes only.**
           files: release/*
           fail_on_unmatched_files: false
