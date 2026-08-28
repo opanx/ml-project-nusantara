@@ -54,6 +54,7 @@ using namespace Memory;
 bool main_thread_flag = true;
 int abs_ScreenX = 0;
 int abs_ScreenY = 0;
+uintptr_t g_BattleManager = 0;  // Found by scanner or offset
 bool drawMAddress;
 bool drawMBox = true;
 bool drawMLine = true;
@@ -103,16 +104,138 @@ struct String {
 };
 
 
+// ======================== BATTLEMANAGER SCANNER ========================
+// Scans libcsharp.so data section for valid BattleManager pointer
+uintptr_t FindBattleManager() {
+    char map[128];
+    char line[512];
+    snprintf(map, sizeof(map), "/proc/%d/maps", g_pid);
+    FILE *f = fopen(map, "rt");
+    if (!f) {
+        printf("[-] Cannot open maps\n");
+        return 0;
+    }
+
+    printf("[+] Scanning for BattleManager...\n");
+    uintptr_t result = 0;
+    int candidates = 0;
+
+    while (fgets(line, sizeof(line), f)) {
+        uintptr_t start, end;
+        char perms[5], dev[11], name[256] = {0};
+        unsigned long inode = 0;
+        if (sscanf(line, "%lx-%lx %4s %*s %*s %lu %s", &start, &end, perms, &inode, name) < 4)
+            continue;
+
+        if (!strstr(name, "libcsharp.so") && !strstr(name, "liblogic.so"))
+            continue;
+
+        if (perms[0] != 'r' || perms[1] != 'w')
+            continue;
+
+        printf("[+] Scanning region: 0x%lx-0x%lx (%s)\n", start, end, name);
+
+        for (uintptr_t addr = start; addr < end - 0x100; addr += 8) {
+            uintptr_t ptr = 0;
+            if (!pvm((void*)addr, &ptr, 8, false))
+                continue;
+
+            if (ptr < 0x10000 || ptr > 0x7FFFFFFFFFFF)
+                continue;
+
+            // Check if ptr points to valid memory
+            uint32_t checkVal = 0;
+            if (!pvm((void*)ptr, &checkVal, 4, false))
+                continue;
+            if (checkVal == 0)
+                continue;
+
+            // Validate BattleManager structure:
+            // m_ShowPlayers at 0x78 (List pointer)
+            uintptr_t showPlayers = 0;
+            if (!pvm((void*)(ptr + OFF_SHOW_PLAYERS), &showPlayers, 8, false))
+                continue;
+            if (showPlayers < 0x10000 || showPlayers > 0x7FFFFFFFFFFF)
+                continue;
+
+            // List count at showPlayers + 0x18
+            uint32_t count = 0;
+            if (!pvm((void*)(showPlayers + 0x18), &count, 4, false))
+                continue;
+            if (count == 0 || count > 20)
+                continue;
+
+            // List data at showPlayers + 0x10
+            uintptr_t dataPtr = 0;
+            if (!pvm((void*)(showPlayers + 0x10), &dataPtr, 8, false))
+                continue;
+            if (dataPtr < 0x10000 || dataPtr > 0x7FFFFFFFFFFF)
+                continue;
+
+            // Validate first player pointer
+            uintptr_t firstPlayer = 0;
+            if (!pvm((void*)(dataPtr + 0x20), &firstPlayer, 8, false))
+                continue;
+            if (firstPlayer < 0x10000 || firstPlayer > 0x7FFFFFFFFFFF)
+                continue;
+
+            // Validate m_ShowMonsters at 0x80
+            uintptr_t showMonsters = 0;
+            if (!pvm((void*)(ptr + OFF_SHOW_MONSTERS), &showMonsters, 8, false))
+                continue;
+            if (showMonsters < 0x10000 || showMonsters > 0x7FFFFFFFFFFF)
+                continue;
+
+            uint32_t monsterCount = 0;
+            if (!pvm((void*)(showMonsters + 0x18), &monsterCount, 4, false))
+                continue;
+            if (monsterCount > 100)
+                continue;
+
+            candidates++;
+            printf("[+] Candidate %d @ 0x%lx: ShowPlayers=0x%lx (count=%u) ShowMonsters=0x%lx (count=%u)\n",
+                   candidates, ptr, showPlayers, count, showMonsters, monsterCount);
+
+            // Validate m_LocalPlayerShow at 0x50
+            uintptr_t localPlayer = 0;
+            if (pvm((void*)(ptr + OFF_LOCAL_PLAYER_SHOW), &localPlayer, 8, false)) {
+                if (localPlayer > 0x10000 && localPlayer < 0x7FFFFFFFFFFF) {
+                    // Check if local player has a valid hero name at 0x8d8
+                    uintptr_t heroName = 0;
+                    if (pvm((void*)(localPlayer + OFF_PLAYER_HERO_NAME), &heroName, 8, false)) {
+                        if (heroName > 0x10000 && heroName < 0x7FFFFFFFFFFF) {
+                            printf("[+] FOUND BattleManager @ 0x%lx (LocalPlayer=0x%lx)\n", ptr, localPlayer);
+                            result = ptr;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // If we have candidates but no perfect match, take the first good one
+            if (candidates == 1 && !result) {
+                result = ptr;
+                printf("[+] Using first valid candidate @ 0x%lx\n", ptr);
+            }
+        }
+        if (result) break;
+    }
+    fclose(f);
+
+    if (!result && candidates > 0) {
+        printf("[!] Found %d candidates but none passed all checks\n", candidates);
+    }
+    return result;
+}
+
+// ======================== CAMERA FINDER ========================
 uintptr_t GetMainCamera() {
-    auto main_cam = Read<uintptr_t>(libbase + 0x75DC470);
-    if (!main_cam)
-        return 0;
-    auto main_cam2 = Read<uintptr_t>(main_cam + 0xb8);
-    if (!main_cam2)
-        return 0;
+    auto main_cam = Read<uintptr_t>(libbase + OFF_CAMERA_MAIN);
+    if (!main_cam) return 0;
+    auto main_cam2 = Read<uintptr_t>(main_cam + OFF_CAMERA_COMPONENT);
+    if (!main_cam2) return 0;
     auto main_cam3 = Read<uintptr_t>(main_cam2 + 0x8);
-    if (!main_cam3)
-        return 0;
+    if (!main_cam3) return 0;
     return main_cam3;
 }
 
@@ -220,11 +343,7 @@ void DrawMonster(ImDrawList *Draw) {
     if (abs_ScreenX < abs_ScreenY) return;
     
     float lineSize = abs_ScreenY / 432;
-    long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER);
-    if (!a1) return;
-    long a2 = getPtr641((a1 + ((0x100 | 0xB8) & 0xFF)));
-    if (!a2) return;
-    long a32 = getPtr641((a2 << 1) >> 1);
+    long a32 = g_BattleManager;
     if (!a32) return;
 
     /**
@@ -464,12 +583,8 @@ int MonsterCount = 0;
 uintptr_t Oneself;
 
 void MonsterRetribution() {
-    uintptr_t BattleManager = getPtr641(libbase + OFF_BATTLE_MANAGER);
-    BattleManager = getPtr641(BattleManager + 0xB8);
-    BattleManager = getPtr641(BattleManager);
-
-    if(!BattleManager) return;
-    Oneself = getPtr641(BattleManager + OFF_LOCAL_PLAYER_SHOW);
+    if (!g_BattleManager) return;
+    Oneself = getPtr641(g_BattleManager + OFF_LOCAL_PLAYER_SHOW);
     if(!Oneself) return;
 
     Vector3 MyPosition;
@@ -601,20 +716,15 @@ void CheckAndTriggerRetribution() {
 }
 
 void RoomInfoList() {
-    uintptr_t LogicBattleManager = getPtr641(libbase + OFF_LOGIC_BATTLE);
-    if (!LogicBattleManager) return;
-
-    long playersList = getPtr641(getPtr641((uintptr_t)LogicBattleManager + OFF_SHOW_PLAYERS) + 0x10);
-    int playerCount = Read<int>(getPtr641((uintptr_t)LogicBattleManager + OFF_SHOW_PLAYERS) + 0x18);
-    if (playerCount <= 0 || !playersList) return;
-
-    long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER);
-    long a2 = getPtr641((a1 + ((0x100 | 0xB8) & 0xFF)));
-    long a32 = getPtr641((a2 << 1) >> 1);
-
-    long selfp = getPtr641(a32 + OFF_LOCAL_PLAYER_SHOW);
-
+    if (!g_BattleManager) return;
+    long selfp = getPtr641(g_BattleManager + OFF_LOCAL_PLAYER_SHOW);
     if (!selfp) return;
+
+    long playersListPtr = getPtr641(g_BattleManager + OFF_SHOW_PLAYERS);
+    if (!playersListPtr) return;
+    long playersList = getPtr641(playersListPtr + 0x10);
+    int playerCount = Read<int>(playersListPtr + 0x18);
+    if (playerCount <= 0 || !playersList) return;
 
     uint32_t myTeamCamp = Read<uint32_t>(selfp + OFF_PLAYER_POS);
 
@@ -680,14 +790,7 @@ Vector2 WorldToMinimap(Vector3 HeroPosition) {
 
 void DrawMinimapESP(ImDrawList* draw) {
     if (!MinimapIcon) return;
-
-    long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER);
-    if (!a1) return;
-
-    long a2 = getPtr641(a1 + 0xB8);
-    if (!a2) return;
-
-    long a32 = getPtr641(a2);
+    long a32 = g_BattleManager;
     if (!a32) return;
 
     long showList = getPtr641(a32 + OFF_SHOW_PLAYERS);
@@ -899,36 +1002,40 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     ImGui::GetStyle().WindowRounding = 25.0f;
     printf("[+] Starting main loop...\n");
     
-    // First-frame debug: verify offset chain
+    // === Find BattleManager ===
     {
         long bm = getPtr641(libbase + OFF_BATTLE_MANAGER);
-        printf("[DEBUG] BattleManager @ libbase+0x%x = 0x%lx\n", OFF_BATTLE_MANAGER, bm);
-        if (bm) {
-            long a2 = getPtr641((bm + ((0x100 | 0xB8) & 0xFF)));
-            printf("[DEBUG] a2 (bm+0xB8) = 0x%lx\n", a2);
-            long a32 = getPtr641((a2 << 1) >> 1);
-            printf("[DEBUG] a32 (a2>>1) = 0x%lx\n", a32);
-            if (a32) {
-                long selfp = getPtr641(a32 + OFF_LOCAL_PLAYER_SHOW);
-                printf("[DEBUG] LocalPlayer @ a32+0x%x = 0x%lx\n", OFF_LOCAL_PLAYER_SHOW, selfp);
-                long showPlayers = getPtr641(a32 + OFF_SHOW_PLAYERS);
-                printf("[DEBUG] ShowPlayers @ a32+0x%x = 0x%lx\n", OFF_SHOW_PLAYERS, showPlayers);
-                if (showPlayers) {
-                    long playerList = getPtr641(showPlayers + 0x10);
-                    uint playerCount = Read<uint>(showPlayers + 0x18);
-                    printf("[DEBUG] Players list: ptr=0x%lx count=%u\n", playerList, playerCount);
-                }
-                long showMonsters = getPtr641(a32 + OFF_SHOW_MONSTERS);
-                printf("[DEBUG] ShowMonsters @ a32+0x%x = 0x%lx\n", OFF_SHOW_MONSTERS, showMonsters);
-                if (showMonsters) {
-                    long monsterList = getPtr641(showMonsters + 0x10);
-                    uint monsterCount = Read<uint>(showMonsters + 0x18);
-                    printf("[DEBUG] Monsters list: ptr=0x%lx count=%u\n", monsterList, monsterCount);
-                }
+        bool bmValid = false;
+        if (bm > 0x10000 && bm < 0x7FFFFFFFFFFF) {
+            uint32_t check = 0;
+            if (pvm((void*)bm, &check, 4, false) && check != 0) {
+                bmValid = true;
+                g_BattleManager = bm;
+                printf("[+] BattleManager from offset: 0x%lx\n", bm);
             }
-        } else {
-            printf("[DEBUG] BattleManager is NULL! Offsets may be wrong.\n");
-            printf("[DEBUG] libbase = 0x%lx, trying to scan for BattleManager pattern...\n", libbase);
+        }
+        if (!bmValid) {
+            printf("[!] Hardcoded offset 0x%x is wrong, scanning memory...\n", OFF_BATTLE_MANAGER);
+            long scanned = FindBattleManager();
+            if (scanned) {
+                g_BattleManager = scanned;
+                printf("[+] BattleManager found by scanner: 0x%lx\n", g_BattleManager);
+            } else {
+                printf("[-] BattleManager NOT FOUND! Features disabled.\n");
+                printf("[-] Game may not be in a match.\n");
+            }
+        }
+        // Verify scanner result works
+        if (g_BattleManager) {
+            long sp = getPtr641(g_BattleManager + OFF_SHOW_PLAYERS);
+            if (sp > 0x10000 && sp < 0x7FFFFFFFFFFF) {
+                uint32_t pc = Read<uint>(sp + 0x18);
+                printf("[+] Verified: ShowPlayers count = %u\n", pc);
+            } else {
+                printf("[!] ShowPlayers invalid, re-scanning...\n");
+                long scanned = FindBattleManager();
+                if (scanned) g_BattleManager = scanned;
+            }
         }
     }
     
@@ -942,6 +1049,15 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
                 continue;
             }
         }
+        // Re-validate BattleManager periodically
+        if (debugFrameCount % 600 == 0 && g_BattleManager) {
+            long sp = getPtr641(g_BattleManager + OFF_SHOW_PLAYERS);
+            if (sp < 0x10000 || sp > 0x7FFFFFFFFFFF) {
+                printf("[!] BattleManager invalid at frame %d, re-scanning...\n", debugFrameCount);
+                long scanned = FindBattleManager();
+                if (scanned) g_BattleManager = scanned;
+            }
+        }
         MonsterRetribution();
         CheckAndTriggerRetribution();
         RoomInfoList();
@@ -949,11 +1065,6 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         Layout_tick_UI();
         drawEnd();
         debugFrameCount++;
-        if (debugFrameCount % 600 == 0) {
-            // Log every ~6 seconds
-            long bm = getPtr641(libbase + OFF_BATTLE_MANAGER);
-            printf("[DEBUG] Frame %d: BattleManager=0x%lx libbase=0x%lx\n", debugFrameCount, bm, libbase);
-        }
         usleep(1000);
     }
     shutdown();
