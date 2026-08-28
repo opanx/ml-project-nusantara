@@ -1,0 +1,97 @@
+name: Build MLBB Tool
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;25.2.9519653"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+
+      - name: Build rsa (ELF binary)
+        run: |
+          cd SRC-MLBB-NUSANTARA
+          $NDK_HOME/ndk-build \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=jni/Android.mk \
+            NDK_APPLICATION_MK=jni/Application.mk \
+            -j$(nproc)
+
+      - name: Check output
+        run: |
+          echo "=== Built files ==="
+          find . -name "rsa" -o -name "librsa.so" | head -5
+          file SRC-MLBB-NUSANTARA/libs/arm64-v8a/rsa 2>/dev/null || echo "Checking other paths..."
+          find . -path "*/arm64-v8a/rsa" -exec file {} \;
+
+      - name: Package
+        run: |
+          mkdir -p release
+          cp SRC-MLBB-NUSANTARA/libs/arm64-v8a/rsa release/ 2>/dev/null || true
+          cp com.mobile.legends_64bit.cs release/dump.cs
+          cp SRC-MLBB-NUSANTARA/jni/src/Includes/Offset.h release/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlbb-tool
+          path: release/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0
+          name: "MLBB External Tool v1.0"
+          body: |
+            ## MLBB External Tool v1.0
+            
+            Retribution auto + ESP for Mobile Legends.
+            
+            ### Features
+            - **Auto Retri** — Priority-based retribution (Lord > Turtle > Buff)
+            - **ESP Line** — Enemy line + hero icon + health
+            - **Distance & Name** — Show distance + hero name
+            - **Minimap ESP** — Enemy on minimap
+            - **Kill Steal Alert** — Alert when monster is retri-able
+            - **KDA Display** — Live K/D/A overlay
+            - **Room Info** — Player info in room
+            
+            ### Retri Priority Modes
+            - All Targets (default)
+            - Lord Only
+            - Lord + Turtle
+            - Buffs Only
+            
+            ### How to use
+            1. Push `rsa` binary to device
+            2. Run with root: `su -c ./rsa`
+            3. Open ImGui menu in-game
+            
+            ### Offsets
+            Offsets from dump.cs (MLBB v2.1.95).
+            Update `Offset.h` when game updates.
+            
+            ### Requirements
+            - Rooted Android (arm64)
+            - MLBB running
+            
+            **Educational purposes only.**
+          files: release/*
+          fail_on_unmatched_files: false
