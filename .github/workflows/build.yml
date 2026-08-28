@@ -81,7 +81,7 @@ jobs:
             
             ### How to use
             1. Push `panxcz` binary to device
-            2. Run with root: `su -c ./rsa`
+            2. Run with root: `su -c ./panxcz`
             3. Open ImGui menu in-game
             
             ### Offsets
