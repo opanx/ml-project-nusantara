@@ -13,6 +13,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <dlfcn.h>
+#include <sys/stat.h>
 
 #include <android/native_window.h>
 #include <EGL/egl.h>

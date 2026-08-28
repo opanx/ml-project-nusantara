@@ -535,14 +535,7 @@ void on_init()
     } else {
         LOGI("Skipping IL2CPP init — no target library in external mode");
     }
-    LOGD("%zu methods", g_Methods.size());
-    LOGD("SORTING");
-    std::sort(g_Methods.begin(), g_Methods.end(),
-              [](const auto &a, const auto &b) { return a->methodPointer < b->methodPointer; });
-    LOGPTR(g_Methods.front()->methodPointer);
-    LOGPTR(g_Methods.back()->methodPointer);
-    LOGD("SORTED");
-    LOGD("HOOKED!");
+    LOGI("on_init done");
 }
 
 // we will run our hacks in a new thread so our while loop doesn't block process main thread
