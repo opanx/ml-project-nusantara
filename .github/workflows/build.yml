@@ -57,10 +57,10 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.3
-          name: "MLBB External Tool v1.3"
+          tag_name: v1.4
+          name: "MLBB External Tool v1.4"
           body: |
-            ## MLBB External Tool v1.3
+            ## MLBB External Tool v1.4
             
             Retribution auto + ESP for Mobile Legends.
             

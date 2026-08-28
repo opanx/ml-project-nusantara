@@ -62,8 +62,9 @@ bool init_egl(uint32_t _screen_x, uint32_t _screen_y, bool log) {
         printf("[+] HideScreenRecorder Disabled\n");
     }
 
-    // Always create window + EGL init (fixes SIGSEGV when HideScreenRecorder=1)
-    ::native_window = android::ANativeWindowCreator::Create("Panxcz v0.1", _screen_x, _screen_y, sgfop);
+    // ALWAYS pass false — hidden window (true) causes SIGSEGV on EGL init
+    // HideScreenRecorder flag saved for future use, but window must be visible
+    ::native_window = android::ANativeWindowCreator::Create("Panxcz v0.1", _screen_x, _screen_y, false);
     if (!native_window) {
         printf("ANativeWindowCreator::Create failed\n");
         return false;
