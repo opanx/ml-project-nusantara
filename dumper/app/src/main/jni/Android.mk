@@ -5,31 +5,10 @@ include $(MY_ROOT_PATH)/asmjit/Android.mk
 include $(MY_ROOT_PATH)/Dobby/Android.mk
 include $(MY_ROOT_PATH)/Frida/Android.mk
 
-LOCAL_PATH := $(MY_ROOT_PATH) # Reset for local path
+LOCAL_PATH := $(MY_ROOT_PATH)
 
 # ============================================================
-# MODULE 1: PanxczTool (ELF executable — injector + process list)
-# ============================================================
-include $(CLEAR_VARS)
-
-LOCAL_MODULE := PanxczTool
-
-LOCAL_CFLAGS := -w -Wno-error=format-security -fpermissive -fexceptions
-LOCAL_CPPFLAGS := -w -std=c++17 -fpermissive -fexceptions
-LOCAL_LDFLAGS += -Wl,--gc-sections
-LOCAL_LDLIBS := -llog -landroid -ldl -lz -lm -lc
-
-LOCAL_ARM_MODE := arm
-
-LOCAL_C_INCLUDES += $(MY_ROOT_PATH)
-
-LOCAL_SRC_FILES := \
-    main_wrapper.cpp
-
-include $(BUILD_EXECUTABLE)
-
-# ============================================================
-# MODULE 2: PanxczOverlay (.so — injected into game process)
+# SINGLE MODULE: libPanxczOverlay.so (everything in one .so)
 # ============================================================
 include $(CLEAR_VARS)
 

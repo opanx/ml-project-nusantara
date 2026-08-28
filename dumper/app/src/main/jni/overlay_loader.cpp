@@ -1,14 +1,11 @@
 /*
- * Panxcz Overlay v1.0 - Shared Library for Injection
+ * Panxcz Overlay v1.0
  *
- * This .so gets injected into the game process via ptrace.
- * __attribute__((constructor)) runs when dlopen loads it.
+ * Load into game process via:
+ *   su -c "LD_PRELOAD=/data/local/tmp/libPanxczOverlay.so am start -n <game>/<activity>"
+ *   OR inject with any injector tool
  *
- * Flow:
- *   1. panxcz_tool injects this .so into game process
- *   2. Constructor runs, finds game's EGL context
- *   3. Hooks eglSwapBuffers via Dobby
- *   4. ImGui renders on top of the game
+ * Constructor runs on dlopen → hooks eglSwapBuffers → ImGui renders.
  */
 
 #include <cstdio>
@@ -21,7 +18,6 @@
 #include "Menu/ImGui.h"
 #include "Includes/Utils.h"
 #include "Includes/Logger.h"
-#include "Dobby/include/dobby.h"
 
 extern void setupMenu();
 extern void internalDrawMenu(int width, int height);
@@ -30,58 +26,42 @@ extern void setNativeWindow(struct ANativeWindow* window);
 extern void* hack_thread(void*);
 extern int glWidth, glHeight;
 
-static volatile bool g_overlay_active = false;
-
-// Thread that waits for game EGL, then hooks eglSwapBuffers
+// Thread that initializes ImGui after game loads
 static void* overlay_thread(void* arg) {
-    LOGI("Overlay thread started");
+    LOGI("[Panxcz] Overlay thread started, PID=%d", getpid());
 
-    // Wait for libEGL.so to load
+    // Wait for libEGL.so
     int wait = 0;
     while (!isLibraryLoaded("libEGL.so")) {
-        usleep(100000); // 100ms
-        if (++wait > 100) { // 10s timeout
-            LOGE("libEGL.so not found, giving up");
+        usleep(200000);
+        if (++wait > 50) { // 10s
+            LOGE("[Panxcz] libEGL.so not found after 10s");
             return nullptr;
         }
     }
-    LOGI("libEGL.so loaded");
 
-    // Wait a bit more for game to initialize EGL
-    usleep(1000000); // 1s
+    // Wait for game to finish loading
+    usleep(2000000); // 2s
 
-    // Now hook eglSwapBuffers via Dobby
-    void* eglSwap = DobbySymbolResolver("libEGL.so", "eglSwapBuffers");
-    if (!eglSwap) {
-        LOGE("eglSwapBuffers not found");
-        return nullptr;
-    }
-    LOGI("eglSwapBuffers @ %p", eglSwap);
-
-    // The existing swapbuffers_hook in ImGui.cpp handles the rest
-    // initModMenu hooks eglSwapBuffers → calls setupMenu() → ImGui renders
-
-    // Start hack_thread which calls initModMenu
+    // hack_thread → initModMenu → hooks eglSwapBuffers → ImGui renders
     hack_thread(nullptr);
 
-    g_overlay_active = true;
-    LOGI("Overlay active! ImGui should appear.");
+    LOGI("[Panxcz] ImGui overlay active!");
     return nullptr;
 }
 
-// Constructor — runs when .so is loaded via dlopen
+// Runs when .so is loaded via LD_PRELOAD or dlopen
 __attribute__((constructor))
-void panxcz_overlay_init() {
-    LOGI("========================================");
-    LOGI("  Panxcz Overlay v1.0 - Loaded!");
-    LOGI("  PID: %d", getpid());
-    LOGI("========================================");
+void panxcz_init() {
+    // Skip if loaded by linker during system boot
+    if (getpid() < 1000) return;
 
-    // Mark as external
-    extern bool g_isExternalBinary;
-    g_isExternalBinary = true;
+    LOGI("[Panxcz] ========================================");
+    LOGI("[Panxcz]  Panxcz Overlay v1.0 — Loaded!");
+    LOGI("[Panxcz]  PID: %d", getpid());
+    LOGI("[Panxcz] ========================================");
 
-    // Start overlay in a new thread (don't block the game)
+    // Start overlay thread (don't block game)
     pthread_t tid;
     pthread_create(&tid, nullptr, overlay_thread, nullptr);
     pthread_detach(tid);

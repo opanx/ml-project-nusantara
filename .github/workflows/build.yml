@@ -34,7 +34,7 @@ jobs:
             NDK_APPLICATION_MK=jni/Application.mk \
             -j$(nproc)
 
-      - name: Build PanxczTool + PanxczOverlay
+      - name: Build libPanxczOverlay.so
         run: |
           cd dumper/app/src/main/jni
           $NDK_HOME/ndk-build \
@@ -43,25 +43,16 @@ jobs:
             NDK_APPLICATION_MK=Application.mk \
             -j$(nproc)
 
-      - name: Check output
-        run: |
-          echo "=== Built files ==="
-          find . -name "panxcz" -o -name "PanxczTool" -o -name "PanxczOverlay" | head -10
-          find . -path "*/arm64-v8a/panxcz" -exec file {} \;
-          find . -path "*/arm64-v8a/PanxczTool" -exec file {} \;
-          find . -path "*/arm64-v8a/libPanxczOverlay.so" -exec file {} \;
-
       - name: Package
         run: |
           mkdir -p release
           cp SRC-MLBB-NUSANTARA/libs/arm64-v8a/panxcz release/ 2>/dev/null || true
-          cp dumper/app/src/main/jni/libs/arm64-v8a/PanxczTool release/ 2>/dev/null || true
           cp dumper/app/src/main/jni/libs/arm64-v8a/libPanxczOverlay.so release/ 2>/dev/null || true
-          chmod 755 release/panxcz release/PanxczTool 2>/dev/null || true
+          chmod 755 release/panxcz 2>/dev/null || true
           chmod 644 release/libPanxczOverlay.so 2>/dev/null || true
           cp com.mobile.legends_64bit.cs release/dump.cs 2>/dev/null || true
           cp SRC-MLBB-NUSANTARA/jni/src/Includes/Offset.h release/ 2>/dev/null || true
-          echo "=== Release contents ==="
+          echo "=== Release ==="
           ls -la release/
 
       - name: Upload artifact
@@ -74,46 +65,46 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.16
-          name: "MLBB External Tool v1.16"
+          name: "Panxcz Tool v1.16"
           body: |
-            ## Panxcz Tool v1.16 - ELF Injector + ImGui Overlay
+            ## Panxcz Tool v1.16
 
-            ### Binaries
-            - `panxcz` — Mod menu (ImGui overlay) + Auto Retri + ESP
-            - `PanxczTool` — **ELF Injector** (process selector + ptrace inject)
-            - `libPanxczOverlay.so` — **Overlay library** (injected into game via PanxczTool)
+            ### Files
+            - `panxcz` — Mod menu (ImGui + ESP + Retri)
+            - `libPanxczOverlay.so` — **Overlay .so** (injected into game)
 
-            ### How it works (like GameGuardian)
-            1. Run `PanxczTool` → shows process list
-            2. Select game process (e.g. Mobile Legends)
-            3. Tool injects `libPanxczOverlay.so` into the game via ptrace
-            4. ImGui overlay appears inside the game!
+            ### How to use libPanxczOverlay.so
 
-            ### Quick start
+            **Method 1: LD_PRELOAD**
             ```
-            # Push both files
-            adb push PanxczTool /data/local/tmp/
             adb push libPanxczOverlay.so /data/local/tmp/
-
-            # Set permissions
-            adb shell chmod 777 /data/local/tmp/PanxczTool
-            adb shell chmod 644 /data/local/tmp/libPanxczOverlay.so
-
-            # Run (game must be open!)
             adb shell
-            su -c /data/local/tmp/PanxczTool
+            su -c "LD_PRELOAD=/data/local/tmp/libPanxczOverlay.so am start -n com.mobile.legends/com.mobile.legends.MainActivity"
             ```
 
-            ### panxcz_tool Features (from Android-LibTool-New)
-            - IL2CPP Dumper (dump.cs)
+            **Method 2: inject / vulcan / any injector**
+            ```
+            adb push libPanxczOverlay.so /data/local/tmp/
+            adb shell
+            su -c "chmod 755 /data/local/tmp/libPanxczOverlay.so"
+            # Use your injector to load libPanxczOverlay.so into the game process
+            ```
+
+            **Method 3: game guardian style**
+            ```
+            # Load libPanxczOverlay.so into running game process
+            su -c "cat /data/local/tmp/libPanxczOverlay.so > /proc/<PID>/fd/..."
+            ```
+
+            ### Features (when loaded into game)
             - ImGui overlay with full menu
-            - Method tracer, strings viewer, class browser
-            - Frida + Dobby hooking support
+            - IL2CPP Dumper
+            - Method tracer, strings viewer
+            - Dobby + Frida hooking
 
             ### Requirements
             - Rooted Android (arm64)
-            - Game running
-            - Both `PanxczTool` and `libPanxczOverlay.so` in `/data/local/tmp/`
+            - Game must be running
 
             **Educational purposes only.**
           files: release/*
