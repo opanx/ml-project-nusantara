@@ -28,7 +28,7 @@ bool initGUI_draw(uint32_t _screen_x, uint32_t _screen_y, bool log) {
     #endif
     if (!ImGui_init()) {
         return false;
-    }   
+    }
     #ifndef USE_OPENGL
         UploadFonts();
     #endif
@@ -39,50 +39,41 @@ bool screenHide;
 bool init_egl(uint32_t _screen_x, uint32_t _screen_y, bool log) {
     FILE *fp;
     char buffer[1024];
+
+    // Disable untrusted touch blocking
     fp = popen("settings put system block_untrusted_touches 0", "r");
-    while (fgets(buffer, sizeof(buffer), fp) != NULL) {
-     
+    if (fp) {
+        while (fgets(buffer, sizeof(buffer), fp) != NULL) {}
+        pclose(fp);
     }
-    pclose(fp);
-    system ("settings put global block_untrusted_touches 0 > /dev/null 2>&1");
-    system ("settings put secure block_untrusted_touches 0 > /dev/null 2>&1");
+    system("settings put global block_untrusted_touches 0 > /dev/null 2>&1");
+    system("settings put secure block_untrusted_touches 0 > /dev/null 2>&1");
 
-    bool sgfop;
-    string sfflp;
-    cout << "[+] HideScreenRecorder? 1[YES] 2[NO]: ";
-    cin >> sfflp;
-    if (sfflp == "1")
-        sgfop = true;
-    else
-        sgfop = false;
+    // Skip HideScreenRecorder prompt — always create visible window
+    // The prompt was causing issues on AOSP ROMs
+    printf("[+] Creating overlay window...\n");
 
-    if (sgfop) {
-        printf("[+] HideScreenRecorder Enabled\n");
-    } else {
-        printf("[+] HideScreenRecorder Disabled\n");
-    }
-
-    // ALWAYS pass false — hidden window (true) causes SIGSEGV on EGL init
-    // HideScreenRecorder flag saved for future use, but window must be visible
+    // Create overlay window (ALWAYS visible — hide=true causes SIGSEGV on AOSP)
     ::native_window = android::ANativeWindowCreator::Create("Panxcz v0.1", _screen_x, _screen_y, false);
     if (!native_window) {
-        printf("ANativeWindowCreator::Create failed\n");
+        printf("[-] ANativeWindowCreator::Create failed\n");
         return false;
     }
     ANativeWindow_acquire(native_window);
 
+    // EGL init
     display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (display == EGL_NO_DISPLAY) {
-        printf("eglGetDisplay error=%u\n", glGetError());
+        printf("[-] eglGetDisplay error=%u\n", glGetError());
         return false;
     }
-    if (log) printf("eglGetDisplay ok\n");
+    if (log) printf("[+] eglGetDisplay ok\n");
 
     if (eglInitialize(display, 0, 0) != EGL_TRUE) {
-        printf("eglInitialize error=%u\n", glGetError());
+        printf("[-] eglInitialize error=%u\n", glGetError());
         return false;
     }
-    if (log) printf("eglInitialize ok\n");
+    if (log) printf("[+] eglInitialize ok\n");
 
     EGLint num_config = 0;
     const EGLint attribList[] = {
@@ -101,12 +92,12 @@ bool init_egl(uint32_t _screen_x, uint32_t _screen_y, bool log) {
         EGL_NONE
     };
 
-    if (log) printf("num_config = %d\n", num_config);
+    if (log) printf("[+] num_config = %d\n", num_config);
     if (eglChooseConfig(display, attribList, &config, 1, &num_config) != EGL_TRUE) {
-        printf("eglChooseConfig error=%u\n", glGetError());
+        printf("[-] eglChooseConfig error=%u\n", glGetError());
         return false;
     }
-    if (log) printf("eglChooseConfig ok\n");
+    if (log) printf("[+] eglChooseConfig ok\n");
 
     EGLint egl_format;
     eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID, &egl_format);
@@ -114,24 +105,24 @@ bool init_egl(uint32_t _screen_x, uint32_t _screen_y, bool log) {
 
     context = eglCreateContext(display, config, EGL_NO_CONTEXT, attrib_list);
     if (context == EGL_NO_CONTEXT) {
-        printf("eglCreateContext error=%u\n", glGetError());
+        printf("[-] eglCreateContext error=%u\n", glGetError());
         return false;
     }
-    if (log) printf("eglCreateContext ok\n");
+    if (log) printf("[+] eglCreateContext ok\n");
 
     surface = eglCreateWindowSurface(display, config, native_window, nullptr);
     if (surface == EGL_NO_SURFACE) {
-        printf("eglCreateWindowSurface error=%u\n", glGetError());
+        printf("[-] eglCreateWindowSurface error=%u\n", glGetError());
         return false;
     }
-    if (log) printf("eglCreateWindowSurface ok\n");
+    if (log) printf("[+] eglCreateWindowSurface ok\n");
 
     if (!eglMakeCurrent(display, surface, surface, context)) {
-        printf("eglMakeCurrent error=%u\n", glGetError());
+        printf("[-] eglMakeCurrent error=%u\n", glGetError());
         return false;
     }
-    if (log) printf("eglMakeCurrent ok\n");
-    if (log) printf("createNativeWindow ok\n");
+    if (log) printf("[+] eglMakeCurrent ok\n");
+    if (log) printf("[+] createNativeWindow ok\n");
 
     return true;
 }
@@ -157,12 +148,12 @@ bool ImGui_init() {
 
     ImGuiIO &io = ImGui::GetIO();
     io.IniFilename = NULL;
-    io.IniSavingRate = -1.0f; // Disable ini saving
+    io.IniSavingRate = -1.0f;
 
-    // Load OPPOSans font (embedded in Font.h)
+    // Load font
     printf("[+] ImGui: Loading font...\n");
     static ImFontConfig font_cfg;
-    font_cfg.FontDataOwnedByAtlas = false; // Static data, don't free
+    font_cfg.FontDataOwnedByAtlas = false;
     font_cfg.SizePixels = 28.0f;
     io.Fonts->AddFontFromMemoryTTF((void *)OPPOSans_H, OPPOSans_H_size, 28.0f, &font_cfg);
 
@@ -233,9 +224,6 @@ bool ImGui_init() {
     style.Colors[ImGuiCol_SliderGrab]          = ImVec4(0.00f, 0.50f, 0.75f, 1.00f);
     style.Colors[ImGuiCol_SliderGrabActive]     = ImVec4(0.00f, 0.65f, 0.90f, 1.00f);
 
-    // Tooltip (use PopupBg for older ImGui versions)
-    // style.Colors[ImGuiCol_TooltipBg] is not available in this ImGui version
-
     // Rounded corners
     style.WindowRounding = 12.0f;
     style.FrameRounding = 8.0f;
@@ -276,7 +264,7 @@ void drawBegin() {
         ImGui_ImplOpenGL3_NewFrame();
     #else
         ImGui_ImplVulkan_NewFrame();
-    #endif        
+    #endif
     ImGui_ImplAndroid_NewFrame(native_window_screen_x, native_window_screen_y);
     ImGui::NewFrame();
 }
@@ -293,13 +281,10 @@ void drawEnd() {
     #endif
 }
 
-
-
 void shutdown() {
     if (!g_Initialized) {
         return;
     }
-    // Cleanup
     #ifdef USE_OPENGL
         ImGui_ImplOpenGL3_Shutdown();
     #else
@@ -322,11 +307,11 @@ void shutdown() {
         display = EGL_NO_DISPLAY;
         context = EGL_NO_CONTEXT;
         surface = EGL_NO_SURFACE;
-    #else    
+    #else
         CleanupVulkanWindow();
         CleanupVulkan();
     #endif
-    
+
     ANativeWindow_release(native_window);
     android::ANativeWindowCreator::Destroy(native_window);
     ::g_Initialized = false;
