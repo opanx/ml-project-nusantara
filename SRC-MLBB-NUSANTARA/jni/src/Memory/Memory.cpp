@@ -13,7 +13,7 @@
 #include <sys/stat.h>
 #include <fcntl.h>
 #include <libgen.h>
-#include "zip/zip.h""
+#include "zip/zip.h"
 
 #if defined(__arm__)
 #define process_vm_readv_syscall 376

@@ -851,21 +851,51 @@ ImGui::Begin(oxorany("             Panxcz v0.1 - MLBB Tool"), nullptr, window_fl
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
+    printf("[+] Panxcz v0.1 - MLBB Tool\n");
+    printf("[+] Finding game process...\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
+    if (pid <= 0) {
+        printf("[-] Game not found! Start MLBB first.\n");
+        return -1;
+    }
     g_pid = pid;
+    printf("[+] PID: %d\n", pid);
+    
     libbase = GetBase(oxorany("libcsharp.so"));
-    printf("Lib: %p \n", libbase);
+    if (libbase == 0) {
+        printf("[-] libcsharp.so not found! Game may not be fully loaded.\n");
+        printf("[-] Wait for game to load then try again.\n");
+        return -1;
+    }
+    printf("[+] libcsharp.so: 0x%lx\n", libbase);
+    
     screen_config();
     ::abs_ScreenX = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
     ::abs_ScreenY = (displayInfo.height < displayInfo.width ? displayInfo.height : displayInfo.width);
     ::native_window_screen_x = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
     ::native_window_screen_y = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
+    printf("[+] Screen: %dx%d\n", abs_ScreenX, abs_ScreenY);
+    
     if (!initGUI_draw(native_window_screen_x, native_window_screen_y, true)) {
+        printf("[-] Failed to init ImGui!\n");
         return -1;
     }
+    printf("[+] ImGui initialized\n");
+    
     Touch_Init(displayInfo.width, displayInfo.height, displayInfo.orientation, false);
+    printf("[+] Touch initialized\n");
+    
     ImGui::GetStyle().WindowRounding = 25.0f;
+    printf("[+] Starting main loop...\n");
     while (main_thread_flag) {
+        // Safety: verify libbase still valid
+        if (libbase == 0) {
+            libbase = GetBase(oxorany("libcsharp.so"));
+            if (libbase == 0) {
+                usleep(500000);
+                continue;
+            }
+        }
         MonsterRetribution();
         CheckAndTriggerRetribution();
         RoomInfoList();
