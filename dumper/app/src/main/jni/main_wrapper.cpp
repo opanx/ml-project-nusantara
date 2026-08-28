@@ -9,7 +9,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 
-extern "C" void* hack_thread(void*);
+extern void* hack_thread(void*);
 
 static volatile int running = 1;
 void sig_handler(int sig) { running = 0; }
