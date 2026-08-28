@@ -23,14 +23,14 @@ LOCAL_CPPFLAGS := -w -s -Wno-error=format-security \
     -fexceptions \
     -DUSE_FRIDA
 
-LOCAL_LDFLAGS += -Wl,--gc-sections,--strip-all
+LOCAL_LDFLAGS += -Wl,--gc-sections
 LOCAL_LDLIBS := \
     -llog \
     -landroid \
     -lEGL \
     -lGLESv3 \
     -ldl \
-    -latomic \
+
     -lz \
     -lm \
     -lc

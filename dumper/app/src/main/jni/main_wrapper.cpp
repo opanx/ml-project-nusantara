@@ -15,6 +15,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <dlfcn.h>
 
 #include <android/native_window.h>
 #include <EGL/egl.h>
@@ -112,6 +113,12 @@ int main(int argc, char* argv[]) {
     printf("  By Panxcz & Freebuff\n");
     printf("============================================\n");
     printf("[+] PID: %d\n", getpid());
+    // Auto-detect: try common game libraries
+    const char* libs[] = {"liblogic.so", "libil2cpp.so", "libunity.so", "libUE4.so", "libtersafe.so", "libgame.so"};
+    for (auto lib : libs) {
+        void* h = dlopen(lib, RTLD_NOW);
+        if (h) { setTargetLibName(lib); dlclose(h); break; }
+    }
     printf("[+] Target: %s\n", targetLibName);
     printf("[+] Ctrl+C to exit\n\n");
 

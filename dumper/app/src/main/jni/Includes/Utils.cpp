@@ -8,7 +8,7 @@
 #include "KittyMemory/MemoryPatch.h"
 
 // === Runtime Configurable Target Lib ===
-char g_targetLibName[256] = "liblogic.so";
+char g_targetLibName[256] = "libil2cpp.so";  // Universal default
 int selectedGamePreset = 0;
 
 GamePreset gamePresets[] = {
