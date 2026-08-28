@@ -1,0 +1,79 @@
+name: Build Native .so
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;25.2.9519653"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/25.2.9519653" >> $GITHUB_ENV
+
+      - name: Build libTool.so (arm64-v8a)
+        run: |
+          $NDK_HOME/ndk-build \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=app/src/main/jni/Android.mk \
+            NDK_APPLICATION_MK=app/src/main/jni/Application.mk \
+            -j$(nproc)
+
+      - name: Check output
+        run: |
+          echo "=== Built .so files ==="
+          find . -name "libTool.so" -exec ls -lh {} \;
+          file libs/arm64-v8a/libTool.so
+
+      - name: Upload libTool.so
+        uses: actions/upload-artifact@v4
+        with:
+          name: libTool.so-arm64-v8a
+          path: libs/arm64-v8a/libTool.so
+
+      - name: Get version
+        id: version
+        run: |
+          VERSION=$(grep 'versionName' app/build.gradle | head -1 | sed 's/.*"\(.*\)".*/\1/')
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ steps.version.outputs.version }}
+          name: "libTool.so v${{ steps.version.outputs.version }}"
+          body: |
+            ## libTool.so v${{ steps.version.outputs.version }}
+            
+            IL2CPP mod menu native library (arm64-v8a).
+            
+            ### How to use
+            1. Push libTool.so to `/data/local/tmp/`
+            2. `adb shell su -c "cp /data/local/tmp/libTool.so /data/data/<game>/lib/"`
+            3. Or inject into game APK with MT Manager / NP Manager
+            
+            ### Runtime Target Selector
+            Open ImGui Settings tab → select game preset:
+            - IL2CPP (Default), MLBB, Unity, Unreal Engine
+            - Free Fire, PUBG, Genshin, COD Mobile, etc.
+            - Or input custom lib name
+            
+            ### Requirements
+            - Rooted Android (Magisk/KernelSU)
+            - Android 5.0+ (arm64)
+          files: libs/arm64-v8a/libTool.so
+          fail_on_unmatched_files: false

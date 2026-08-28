@@ -34,28 +34,28 @@ jobs:
             NDK_APPLICATION_MK=jni/Application.mk \
             -j$(nproc)
 
-      - name: Build panxcz_dumper (External dumper)
+      - name: Build panxcz_dumper (External from Android-LibTool-New)
         run: |
-          cd dumper
+          cd dumper/app/src/main/jni
           $NDK_HOME/ndk-build \
             NDK_PROJECT_PATH=. \
             APP_BUILD_SCRIPT=Android.mk \
-            NDK_APPLICATION_MK=Application.mk \
             -j$(nproc)
 
       - name: Check output
         run: |
           echo "=== Built files ==="
-          find . -name "panxcz" -o -name "panxcz_dumper" | head -10
+          find . -name "panxcz" -o -name "libTool.so" | head -10
           find . -path "*/arm64-v8a/panxcz" -exec file {} \;
-          find . -path "*/arm64-v8a/panxcz_dumper" -exec file {} \;
+          find . -path "*/arm64-v8a/libTool.so" -exec file {} \;
 
       - name: Package
         run: |
           mkdir -p release
           cp SRC-MLBB-NUSANTARA/libs/arm64-v8a/panxcz release/ 2>/dev/null || true
-          cp dumper/libs/arm64-v8a/panxcz_dumper release/ 2>/dev/null || true
-          chmod 755 release/panxcz release/panxcz_dumper 2>/dev/null || true
+          # Rename libTool.so to panxcz_tool executable
+          cp dumper/app/src/main/jni/libs/arm64-v8a/libTool.so release/panxcz_tool 2>/dev/null || true
+          chmod 755 release/panxcz release/panxcz_tool 2>/dev/null || true
           cp com.mobile.legends_64bit.cs release/dump.cs
           cp SRC-MLBB-NUSANTARA/jni/src/Includes/Offset.h release/
 
