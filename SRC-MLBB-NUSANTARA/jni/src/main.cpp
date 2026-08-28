@@ -722,7 +722,7 @@ void Layout_tick_UI() {
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_AlwaysAutoResize;
 ImGui::SetNextWindowSizeConstraints(ImVec2(800, 0), ImVec2(820, FLT_MAX));
 
-ImGui::Begin(oxorany("                  MLBB EXTERNAL - BY YOUR NAME"), nullptr, window_flags);
+ImGui::Begin(oxorany("             Panxcz v0.1 - MLBB Tool"), nullptr, window_flags);
 
 
     if (ImGui::BeginTabBar("####")) {

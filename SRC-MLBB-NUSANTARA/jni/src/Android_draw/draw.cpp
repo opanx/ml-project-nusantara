@@ -55,92 +55,84 @@ bool init_egl(uint32_t _screen_x, uint32_t _screen_y, bool log) {
         sgfop = true;
     else
         sgfop = false;
-   
-    if (sgfop)
-    {
-        printf("[+] Enable\n");
-        ::native_window = android::ANativeWindowCreator::Create("AImGui", _screen_x, _screen_y, true);
-	}
-	
-	if (!sgfop)// Close Fang Luping
-    {
-        printf("[+] Disable\n");
 
-    ::native_window = android::ANativeWindowCreator::Create("AImGui", _screen_x, _screen_y, false);
+    if (sgfop) {
+        printf("[+] HideScreenRecorder Enabled\n");
+    } else {
+        printf("[+] HideScreenRecorder Disabled\n");
+    }
 
+    // Always create window + EGL init (fixes SIGSEGV when HideScreenRecorder=1)
+    ::native_window = android::ANativeWindowCreator::Create("Panxcz v0.1", _screen_x, _screen_y, sgfop);
+    if (!native_window) {
+        printf("ANativeWindowCreator::Create failed\n");
+        return false;
+    }
     ANativeWindow_acquire(native_window);
+
     display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
     if (display == EGL_NO_DISPLAY) {
         printf("eglGetDisplay error=%u\n", glGetError());
         return false;
     }
-    if (log) {
-        printf("eglGetDisplay ok\n");
-    }
+    if (log) printf("eglGetDisplay ok\n");
+
     if (eglInitialize(display, 0, 0) != EGL_TRUE) {
         printf("eglInitialize error=%u\n", glGetError());
         return false;
     }
-    if (log) {
-        printf("eglInitialize ok\n");
-    }
+    if (log) printf("eglInitialize ok\n");
+
     EGLint num_config = 0;
     const EGLint attribList[] = {
-            EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
-            EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
-            EGL_BLUE_SIZE, 5,   //-->delete
-            EGL_GREEN_SIZE, 6,  //-->delete
-            EGL_RED_SIZE, 5,    //-->delete
-            EGL_BUFFER_SIZE, 32,  //-->new field
-            EGL_DEPTH_SIZE, 16,
-            EGL_STENCIL_SIZE, 8,
-            EGL_NONE
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES2_BIT,
+        EGL_BLUE_SIZE, 5,
+        EGL_GREEN_SIZE, 6,
+        EGL_RED_SIZE, 5,
+        EGL_BUFFER_SIZE, 32,
+        EGL_DEPTH_SIZE, 16,
+        EGL_STENCIL_SIZE, 8,
+        EGL_NONE
     };
     const EGLint attrib_list[] = {
-            EGL_CONTEXT_CLIENT_VERSION,
-            3,
-            EGL_NONE
+        EGL_CONTEXT_CLIENT_VERSION, 3,
+        EGL_NONE
     };
 
-    if (log) {
-        printf("num_config = %d\n", num_config);
-    }
+    if (log) printf("num_config = %d\n", num_config);
     if (eglChooseConfig(display, attribList, &config, 1, &num_config) != EGL_TRUE) {
-        printf("eglChooseConfig  error=%u\n", glGetError());
+        printf("eglChooseConfig error=%u\n", glGetError());
         return false;
     }
-    if (log) {
-        printf("eglChooseConfig ok\n");
-    }
+    if (log) printf("eglChooseConfig ok\n");
+
     EGLint egl_format;
     eglGetConfigAttrib(display, config, EGL_NATIVE_VISUAL_ID, &egl_format);
     ANativeWindow_setBuffersGeometry(native_window, 0, 0, egl_format);
+
     context = eglCreateContext(display, config, EGL_NO_CONTEXT, attrib_list);
     if (context == EGL_NO_CONTEXT) {
-        printf("eglCreateContext  error = %u\n", glGetError());
+        printf("eglCreateContext error=%u\n", glGetError());
         return false;
     }
-    if (log) {
-        printf("eglCreateContext ok\n");
-    }
+    if (log) printf("eglCreateContext ok\n");
+
     surface = eglCreateWindowSurface(display, config, native_window, nullptr);
     if (surface == EGL_NO_SURFACE) {
-        printf("eglCreateWindowSurface  error = %u\n", glGetError());
+        printf("eglCreateWindowSurface error=%u\n", glGetError());
         return false;
     }
-    if (log) {
-        printf("eglCreateWindowSurface ok\n");
-    }
+    if (log) printf("eglCreateWindowSurface ok\n");
+
     if (!eglMakeCurrent(display, surface, surface, context)) {
-        printf("eglMakeCurrent  error = %u\n", glGetError());
+        printf("eglMakeCurrent error=%u\n", glGetError());
         return false;
     }
-    if (log) {
-        printf("eglMakeCurrent ok\n");
-        printf("createNativeWindow ok\n");
-    }
+    if (log) printf("eglMakeCurrent ok\n");
+    if (log) printf("createNativeWindow ok\n");
+
     return true;
-    }
 }
 
 void screen_config() {

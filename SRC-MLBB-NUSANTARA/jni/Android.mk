@@ -5,7 +5,7 @@ include $(CLEAR_VARS)
 #[[使用opengl绘制，否则使用vulkan绘制]] (1=opengl)(0=vulkan)
 OPENGL_DRAW = 1
 
-LOCAL_MODULE := rsa
+LOCAL_MODULE := panxcz
 
 LOCAL_CFLAGS := -std=c++17
 LOCAL_CFLAGS += -fvisibility=hidden
