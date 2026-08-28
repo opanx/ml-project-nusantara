@@ -199,40 +199,47 @@ uintptr_t FindBattleManager() {
             if (monsterCount > 100) continue;
 
             candidates++;
-            if (candidates <= 3) {
-                printf("[+] Candidate %d @ 0x%lx (region 0x%lx-0x%lx): Players=%u Monsters=%u\n",
-                       candidates, ptr, region.start, region.end, count, monsterCount);
+
+            // STRICT VALIDATION: MLBB has 5v5 = 10 players in match
+            // Skip if count < 5 or count > 10 (not a valid match)
+            if (count < 5 || count > 10) {
+                if (candidates <= 3)
+                    printf("[-] Candidate %d @ 0x%lx: Players=%u (skipped, need 5-10)\n", candidates, ptr, count);
+                continue;
             }
 
             // Validate m_LocalPlayerShow at 0x50
             uintptr_t localPlayer = 0;
-            if (pvm((void*)(ptr + OFF_LOCAL_PLAYER_SHOW), &localPlayer, 8, false)) {
-                if (localPlayer > 0x10000 && localPlayer < 0x7FFFFFFFFFFF) {
-                    // Check hero name at 0x8d8
-                    uintptr_t heroName = 0;
-                    if (pvm((void*)(localPlayer + OFF_PLAYER_HERO_NAME), &heroName, 8, false)) {
-                        if (heroName > 0x10000 && heroName < 0x7FFFFFFFFFFF) {
-                            // Verify hero name string is readable
-                            uint32_t strLen = 0;
-                            if (pvm((void*)(heroName + 0x10), &strLen, 4, false) && strLen > 0 && strLen < 100) {
-                                printf("[+] FOUND BattleManager @ 0x%lx (Players=%u LocalPlayer=0x%lx)\n",
-                                       ptr, count, localPlayer);
-                                result = ptr;
-                                break;
-                            }
-                        }
-                    }
-                }
-            }
+            if (!pvm((void*)(ptr + OFF_LOCAL_PLAYER_SHOW), &localPlayer, 8, false)) continue;
+            if (localPlayer < 0x10000 || localPlayer > 0x7FFFFFFFFFFF) continue;
 
-            // Take first valid candidate if no perfect match
-            if (!result && candidates == 1) {
-                result = ptr;
-                printf("[+] Using first valid candidate @ 0x%lx\n", ptr);
-            }
+            // Check entity ID (should be a valid hero ID > 1000)
+            uint32_t entityId = 0;
+            if (!pvm((void*)(localPlayer + OFF_ENTITY_ID), &entityId, 4, false)) continue;
+            if (entityId < 100 || entityId > 10000) continue;
+
+            // Check hero name pointer
+            uintptr_t heroName = 0;
+            if (!pvm((void*)(localPlayer + OFF_PLAYER_HERO_NAME), &heroName, 8, false)) continue;
+            if (heroName < 0x10000 || heroName > 0x7FFFFFFFFFFF) continue;
+
+            // Verify hero name string length
+            uint32_t strLen = 0;
+            if (!pvm((void*)(heroName + 0x10), &strLen, 4, false)) continue;
+            if (strLen == 0 || strLen > 50) continue;
+
+            // Check HP is reasonable (> 0)
+            uint32_t hp = 0;
+            if (!pvm((void*)(localPlayer + OFF_ENTITY_HP), &hp, 4, false)) continue;
+            if (hp == 0 || hp > 50000) continue;
+
+            printf("[+] FOUND BattleManager @ 0x%lx (Players=%u Monsters=%u LocalPlayer=0x%lx HP=%u ID=%u)\n",
+                   ptr, count, monsterCount, localPlayer, hp, entityId);
+            result = ptr;
+            break;
         }
         if (result) break;
-        if (regionsScanned % 20 == 0) {
+        if (regionsScanned % 100 == 0) {
             printf("[+] Scanned %d/%zu regions, %d candidates...\n",
                    regionsScanned, rwRegions.size(), candidates);
         }
