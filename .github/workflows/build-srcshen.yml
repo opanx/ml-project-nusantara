@@ -1,0 +1,95 @@
+name: Build Panxcz cheat mlbb (srcshen)
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'srcshen/**'
+      - 'com.mobile.legends_22.1.97.12061.cs'
+      - '.github/workflows/build-srcshen.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Android SDK + NDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install NDK r21
+        run: |
+          sdkmanager "ndk;21.4.7075529"
+          echo "NDK_HOME=$ANDROID_HOME/ndk/21.4.7075529" >> $GITHUB_ENV
+
+      - name: Build panxcz_mlbb (ELF arm64)
+        run: |
+          cd srcshen
+          $NDK_HOME/ndk-build \
+            NDK_PROJECT_PATH=. \
+            APP_BUILD_SCRIPT=jni/Android.mk \
+            NDK_APPLICATION_MK=jni/Application.mk \
+            -j$(nproc)
+
+      - name: Package
+        run: |
+          mkdir -p release
+          cp srcshen/libs/arm64-v8a/panxcz_mlbb release/panxcz_mlbb 2>/dev/null || true
+          chmod 755 release/panxcz_mlbb 2>/dev/null || true
+          cp com.mobile.legends_22.1.97.12061.cs release/dump_22.1.97.12061.cs 2>/dev/null || true
+          ls -la release/ || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: panxcz-mlbb
+          path: release/
+
+      - name: Create pre-release v0.1
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v0.1
+          name: "Panxcz cheat mlbb v0.1 pre release"
+          prerelease: true
+          body: |
+            ## Panxcz cheat mlbb v0.1 pre release
+
+            ### File
+            | File | Type | Keterangan |
+            |------|------|------------|
+            | `panxcz_mlbb` | ELF executable (arm64) | Cheat MLBB terbaru (ESP + Auto Retri + Minimap + Drone View) |
+            | `dump_22.1.97.12061.cs` | Dump reference | Offsets & kelas untuk update berikutnya |
+
+            ### Offset Source
+            - Di-update berdasarkan dump resmi **MLBB 22.1.97.12061**
+            - `ShowEntity` / `ShowPlayer` / `BattleManager` / `GameMethod` / `CoolDownData` diverifikasi langsung dari dump
+            - `ShowEntity.m_bSameCampType` = 0x2a9
+            - `ShowEntity.m_vCachePosition` = 0x28c
+            - `ShowPlayer.m_HeroName` = 0x8d0
+            - `BattleManager.m_LocalPlayerShow` = 0x48, `m_ShowPlayers` = 0x70, `m_ShowMonsters` = 0x78
+
+            ### Cara Pakai (MT Manager / Terminal root)
+            ```bash
+            # Copy ke device root
+            # Jalankan lewat MT Manager (terminal emulator) atau:
+            su -c "chmod 755 /data/local/tmp/panxcz_mlbb && /data/local/tmp/panxcz_mlbb"
+            ```
+
+            ### Fitur
+            - ESP Player (line, icon hero, HP bar, MP bar, skill CD musuh)
+            - ESP Monster/Minion + alert Lord/Turtle diserang
+            - Auto Retribution (Lord/Turtle/Buff/Crab/Lito) + set posisi tombol
+            - Minimap ESP (icon hero + ring merah)
+            - Drone View (FOV camera)
+            - Multi theme (Neon Dark / Light / Classic), EN + 中文
+
+            **Educational purposes only.** By Panxcz & Freebuff.
+          files: release/*
+          fail_on_unmatched_files: false

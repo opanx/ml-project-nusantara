@@ -3,6 +3,10 @@ name: Build MLBB Tool
 on:
   push:
     branches: [ main, master ]
+    paths:
+      - 'SRC-MLBB-NUSANTARA/**'
+      - 'dumper/**'
+      - 'com.mobile.legends_64bit.cs'
   workflow_dispatch:
 
 permissions:
