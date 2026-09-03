@@ -89,6 +89,7 @@ extern int  g_retriNativeY;
 extern float g_retriLogicalX;
 extern float g_retriLogicalY;
 extern void Touch_TapNative(int x, int y, int holdMs);
+extern bool Touch_Busy();
 
 // i18n: EN / 中文
 #define TR(en, cn) (langEN ? (en) : (cn))
@@ -344,6 +345,11 @@ int retriHoldMs = 80;          // berapa lama tombol di-hold per tap
 int retriRetryMs = 2500;       // retry tap tiap X ms kalau target masih hidup
 int retriDmgBonus = 0;         // koreksi damage retri (kalau formula meleset)
 float retriMaxDist = 6.0f;     // jarak maksimum trigger
+float retriJungleMult = 1.0f;  // pengali damage utk monster (item jungle/blessing)
+
+// pending tap: antri sampe tangan bersih (biar ga tabrakan sama jari asli)
+static int g_pendingTapIdx = -1;
+static uint64_t g_pendingTapSince = 0;
 
 static uint64_t NowMs() {
     using namespace std::chrono;
@@ -740,60 +746,83 @@ void MonsterRetribution() {
     }
 }
 
-int CalculateRetriDamage(int Level, int KillWild) {
-    if (KillWild < 5) {
-        return 600 + (Level - 1) * 80;
-    } else {
-        return (600 + (Level - 1) * 80) + (300 + (Level - 1) * 40);
-    }
+// Formula resmi MLBB (update): Retribution true damage = 750 + 150 * hero level
+int CalculateRetriDamage(int Level) {
+    return 750 + 150 * Level;
+}
+
+static void DoRetriTap(int i, uint64_t now) {
+    if (g_retriNativeX >= 0 && g_retriNativeY >= 0)
+        Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
+    else
+        Touch_Tap((int) retriTouchX, (int) retriTouchY, retriHoldMs);
+    lastRetriTriggered[i] = true;
+    lastRetriTapMs[i] = now;
+}
+
+static bool RetriEligible(int i, int retriDmg) {
+    if (i < 0 || i >= MonsterCount) return false;
+    if (!monster[i].isValid || monster[i].isDead) return false;
+    if (monster[i].distance > retriMaxDist) return false;
+    if (monster[i].health > retriDmg) return false;
+    int id = Read<int>(monster[i].address + 0x18c);
+    if (AutoRetributionLord && (id == 2002)) return true;
+    if (AutoRetributionTurtle && (id == 2003)) return true;
+    if (AutoRetributionBlue && (id == 2005)) return true;
+    if (AutoRetributionLito && (id == 2056 || id == 2072)) return true;
+    if (AutoRetributionCrab && (id == 2011 || id == 2013)) return true;
+    if (AutoRetributionRed && (id == 2004)) return true;
+    return false;
 }
 
 void CheckAndTriggerRetribution() {
     if (!autoRetribution) return;
     if (!Oneself || MonsterCount <= 0) return;
     int myLevel = Read<int>(Oneself + 0x190);
-    int killWild = Read<int>(Oneself + 0xa20);
-    int retriDmg = CalculateRetriDamage(myLevel, killWild) + retriDmgBonus;
+    int retriDmg = (int) ((750 + 150 * myLevel) * retriJungleMult) + retriDmgBonus;
     if (retriDmg < 0) retriDmg = 0;
     uint64_t now = NowMs();
+
+    // 1) detect: target butuh retri? kalau jari lagi nempel, antri (pending)
     for (int i = 0; i < MonsterCount; i++) {
         if (!monster[i].isValid || monster[i].isDead) {
             lastRetriTriggered[i] = false;
             continue;
         }
-        if (monster[i].distance > retriMaxDist) {
-            lastRetriTriggered[i] = false;
-            continue;
-        }
-        int id = Read<int>(monster[i].address + 0x18c);
-        bool isTarget = false;
-        if (AutoRetributionLord && (id == 2002)) isTarget = true;
-        if (AutoRetributionTurtle && (id == 2003)) isTarget = true;
-        if (AutoRetributionBlue && (id == 2005)) isTarget = true;
-        if (AutoRetributionLito && (id == 2056 || id == 2072)) isTarget = true;
-        if (AutoRetributionCrab && (id == 2011 || id == 2013)) isTarget = true;
-        if (AutoRetributionRed && (id == 2004)) isTarget = true;
-        if (!isTarget) {
-            lastRetriTriggered[i] = false;
-            continue;
-        }
-        if (monster[i].health <= retriDmg) {
-            if (!lastRetriTriggered[i]) {
-                // retri CD kira-kira 30s+; kalau tap pertama meleset (button geser/posisi,
-                // target sembuh lagi, dll) kita coba ulang tiap retriRetryMs selama target
-                // masih hidup & eligible, sampai target mati.
-                if (g_retriNativeX >= 0 && g_retriNativeY >= 0)
-                    Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
+        if (RetriEligible(i, retriDmg)) {
+            if (g_pendingTapIdx == i) continue; // udah antri
+            if (lastRetriTriggered[i]) {
+                // retri CD 30s+: boleh coba ulang kalau target masih hidup & masih bisa dibunuh
+                if (now - lastRetriTapMs[i] >= (uint64_t) retriRetryMs)
+                    lastRetriTriggered[i] = false;
                 else
-                    Touch_Tap((int) retriTouchX, (int) retriTouchY, retriHoldMs);
-                lastRetriTriggered[i] = true;
-                lastRetriTapMs[i] = now;
-            } else if (now - lastRetriTapMs[i] >= (uint64_t) retriRetryMs) {
-                lastRetriTriggered[i] = false;   // siap retry di frame berikutnya
+                    continue;
+            }
+            if (Touch_Busy()) {
+                // tangan lagi dipake -> antri, eksekusi pas jari lepas
+                g_pendingTapIdx = i;
+                g_pendingTapSince = now;
+            } else {
+                DoRetriTap(i, now);
             }
         } else {
             lastRetriTriggered[i] = false;
         }
+    }
+
+    // 2) eksekusi pending tap begitu tangan bersih (max tunggu 500ms biar target ga lolos)
+    if (g_pendingTapIdx >= 0 && !Touch_Busy()) {
+        int i = g_pendingTapIdx;
+        g_pendingTapIdx = -1;
+        if (RetriEligible(i, retriDmg) && now - g_pendingTapSince < 800) {
+            DoRetriTap(i, now);
+        } else {
+            lastRetriTriggered[i] = false;
+        }
+    }
+    // pending keburu basi (target lolos / jari ga pernah lepas) -> reset
+    if (g_pendingTapIdx >= 0 && now - g_pendingTapSince > 800) {
+        g_pendingTapIdx = -1;
     }
 }
 /*
@@ -1062,7 +1091,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v0.5");
+    ImGui::TextDisabled("MLBB v0.6");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1144,11 +1173,10 @@ void Layout_tick_UI() {
             SectionHeader(TR("Damage & Timing", "Damage & Timing"));
             if (Oneself) {
                 int lvl = Read<int>(Oneself + 0x190);
-                int kw = Read<int>(Oneself + 0xa20);
-                int dmg = CalculateRetriDamage(lvl, kw) + retriDmgBonus;
+                int dmg = (int) ((750 + 150 * lvl) * retriJungleMult) + retriDmgBonus;
                 if (dmg < 0) dmg = 0;
                 ImGui::TextColored(ImColor(255, 200, 60, 255),
-                    TR("Retri dmg now: %d  (Lv %d | %d jungle kills)", "Damage retri: %d (Lv %d | kill %d)"), dmg, lvl, kw);
+                    TR("Retri dmg now: %d  (Lv %d, 750+150/level)", "Damage retri: %d (Lv %d, 750+150/level)"), dmg, lvl);
                 int ready = 0;
                 for (int t = 0; t < MonsterCount; t++) {
                     if (!monster[t].isValid || monster[t].isDead) continue;
@@ -1161,6 +1189,7 @@ void Layout_tick_UI() {
                 ImGui::TextDisabled(TR("(no monster data yet - enter a match)", "(belum ada data - masuk match dulu)"));
             }
             ImGui::SliderInt(TR("Dmg Bonus", "Dmg Bonus"), &retriDmgBonus, -500, 1000, "%d");
+            ImGui::SliderFloat(TR("Jungle Mult", "Pengali Jungle"), &retriJungleMult, 0.50f, 3.0f, "%.2f");
             ImGui::SliderInt(TR("Hold ms", "Tahan (ms)"), &retriHoldMs, 30, 300, "%d ms");
             ImGui::SliderInt(TR("Retry every", "Retry tiap"), &retriRetryMs, 500, 6000, "%d ms");
             ImGui::SliderFloat(TR("Max Distance", "Jarak Max"), &retriMaxDist, 1.0f, 20.0f, "%.1f");
@@ -1267,6 +1296,7 @@ static void SaveCfg() {
     w("retriRetry", retriRetryMs);
     w("retriBonus", retriDmgBonus);
     w("retriDist", (long long) (retriMaxDist * 100.0f));
+    w("retriJung", (long long) (retriJungleMult * 100.0f));
     w("retriNX", g_retriNativeX);
     w("retriNY", g_retriNativeY);
     w("espHealth", drawMHealth ? 1 : 0);
@@ -1312,6 +1342,7 @@ static void LoadCfg() {
         else if (k == "retriRetry") retriRetryMs = (int) v;
         else if (k == "retriBonus") retriDmgBonus = (int) v;
         else if (k == "retriDist") retriMaxDist = (float) v / 100.0f;
+        else if (k == "retriJung") retriJungleMult = (float) v / 100.0f;
         else if (k == "retriNX") g_retriNativeX = (int) v;
         else if (k == "retriNY") g_retriNativeY = (int) v;
         else if (k == "espHealth") drawMHealth = v != 0;
@@ -1384,7 +1415,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v0.5\n");
+    printf("[+] PANXCZ MLBB v0.6\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");

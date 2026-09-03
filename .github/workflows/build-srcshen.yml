@@ -52,16 +52,22 @@ jobs:
           name: panxcz-mlbb
           path: release/
 
-      - name: Create pre-release v0.5
+      - name: Create pre-release v0.6
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.5
-          name: "Panxcz cheat mlbb v0.5 pre release"
+          tag_name: v0.6
+          name: "Panxcz cheat mlbb v0.6 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v0.5 pre release
+            ## Panxcz cheat mlbb v0.6 pre release
 
-            ### Fix v0.4 -> v0.5
+            ### Fix v0.5 -> v0.6
+            - **Damage retri formula diganti ke rumus resmi MLBB**: `750 + 150 x level` (Lv1=900, Lv4=1350, Lv5=1500 dst) - bukan rumus lama 600+(lvl-1)x80
+            - **Auto Retri nunggu tangan bersih dulu baru tap**: cheat deteksi target yg butuh retri -> kalau jari asli masih nempel di layar (joystick/dll), tap DIANTRI & dieksekusi pas jari lepas (max 800ms). Tap sintetik ga pernah tabrakan sama sentuhan asli lagi
+            - **Slider Jungle Mult** (default 1.00) buat damage ke monster kena bonus item jungle/blessing + Dmg Bonus tetap ada. Info live nunjukin damage sesuai rumus baru
+            - Tap sintetik lengkap dgn BTN_TOOL_FINGER down/up biar state sentuhan bersih di device
+            - Semua setting baru ikut ke-save otomatis (autosave config)
+
             - **Auto Retri tap sekarang di slot sentuh TERPISAH (slot 12)** - sebelumnya tap sintetik digabung ke slot 0, jadi pas jempol kiri pegang joystick, tap retri nyatu sama sentuhan joystick -> kaya nyentuh tombol lain / joystick gerak sendiri / retri ga kepencet. Sekarang tap retri jalan di slot sendiri, gak ganggu jari asli
             - **Kalibrasi & pengaturan DISIMPAN otomatis** ke /data/local/tmp/panxcz_mlbb.cfg (autosave ~1.5 detik + pas exit) - minimap angle/scale/pos, dot retri + native coords, Dmg Bonus, tema, bahasa, Safe Mode, dll. Sekali set, gak reset lagi tiap buka
             - **FPS tampil saat menu minimized** (pill nunjukin FPS + status)

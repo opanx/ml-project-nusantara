@@ -80,6 +80,7 @@ static void SendTapDown(int nx, int ny) {
     ev[c++] = {EV_ABS, ABS_Y, ny};
     ev[c++] = {EV_SYN, SYN_MT_REPORT, 0};
     ev[c++] = {EV_KEY, BTN_TOUCH, 1};
+    ev[c++] = {EV_KEY, BTN_TOOL_FINGER, 1};
     ev[c++] = {EV_SYN, SYN_REPORT, 0};
     (void)!write(nowfd, ev, (size_t)c * sizeof(struct input_event));
     g_synDown = true;
@@ -108,10 +109,15 @@ static void SendTapUp() {
     ev[c++] = {EV_SYN, SYN_MT_REPORT, 0};
     if (g_realContacts <= 0) {
         ev[c++] = {EV_KEY, BTN_TOUCH, 0};
+        ev[c++] = {EV_KEY, BTN_TOOL_FINGER, 0};
     }
     ev[c++] = {EV_SYN, SYN_REPORT, 0};
     (void)!write(nowfd, ev, (size_t)c * sizeof(struct input_event));
     g_synDown = false;
+}
+
+bool Touch_Busy() {
+    return g_realContacts > 0 || g_synDown;
 }
 
 // logical (layar overlay) -> native device coordinate
