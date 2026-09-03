@@ -18,6 +18,13 @@
 
 bool other_touch; //其他触摸
 
+// Kalibrasi retri: di-capture dari sentuhan asli di thread TypeA
+bool g_retriCapture = false;
+int  g_retriNativeX = -1;
+int  g_retriNativeY = -1;
+float g_retriLogicalX = -1.0f;
+float g_retriLogicalY = -1.0f;
+
 
 static uint32_t orientation = 0;
 static float screenHeight = 0, screenWidth = 0;
@@ -253,6 +260,14 @@ static void *TypeA(void *arg) {
                     io.MousePos = {x, y};
                     // LOGD("final %d %.1f %.1f\n", other_touch, x, y);
                     io.MouseDown[0] = true;
+                    // Kalibrasi 1-tap: simpan posisi native + logical sentuhan asli ini
+                    if (g_retriCapture) {
+                        g_retriNativeX = Finger[i][latest].x;
+                        g_retriNativeY = Finger[i][latest].y;
+                        g_retriLogicalX = x;
+                        g_retriLogicalY = y;
+                        g_retriCapture = false;
+                    }
                 } else {
                     io.MouseDown[0] = false;
                     //  LOGD("抬起");
@@ -530,6 +545,18 @@ void Touch_Move(float x, float y) {
 
 void Touch_Up() {
     touchObj &touch = Finger[0][9];
+    touch.isDown = false;
+    Upload();
+}
+
+void Touch_TapNative(int x, int y, int holdMs) {
+    touchObj &touch = Finger[0][9];
+    touch.id = 19;
+    touch.x = x;
+    touch.y = y;
+    touch.isDown = true;
+    Upload();
+    usleep((useconds_t)(holdMs > 0 ? holdMs : 80) * 1000);
     touch.isDown = false;
     Upload();
 }

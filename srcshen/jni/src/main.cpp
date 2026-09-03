@@ -75,6 +75,20 @@ bool langEN = true;
 float RadiusCir = 50.0f;
 long libbase = 0;
 
+// v0.4: keamanan & filter
+bool safeMode = true;      // true = TIDAK ada memory write ke game (anti-ban)
+bool g_showTeam = false;   // true = tampilkan teammate (default: musuh doang)
+bool g_campCheck = true;   // fallback deteksi tim via iCamp kalau flag same-camp meleset
+float retriDotSize = 26.0f; // radius lingkaran penanda posisi retri
+
+// Kalibrasi touch retri (native capture dari TouchHelperA)
+extern bool g_retriCapture;
+extern int  g_retriNativeX;
+extern int  g_retriNativeY;
+extern float g_retriLogicalX;
+extern float g_retriLogicalY;
+extern void Touch_TapNative(int x, int y, int holdMs);
+
 // i18n: EN / 中文
 #define TR(en, cn) (langEN ? (en) : (cn))
 
@@ -169,6 +183,7 @@ bool FindFovOffset() {
 }
 
 void ApplyDroneView() {
+    if (safeMode) return;   // safe mode: jangan pernah write memory game
     if (!droneView) {
         // restore FOV sekali
         if (g_fovOffset > 0) {
@@ -334,10 +349,25 @@ static uint64_t NowMs() {
     return (uint64_t) duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
 }
 
+// Deteksi tim: flag same-camp (0x2a9) + fallback iCamp (0x30) kalau flag kelewat
+static bool IsTeammate(uintptr_t obj) {
+    if (Read<bool>(obj + 0x2a9)) return true;
+    if (!g_campCheck) return false;
+    uintptr_t bm = getPtr641(libbase + 0x62dc5e0);
+    uintptr_t self = bm ? getPtr641(getPtr641(bm + 0xa8) + 0x48) : 0;
+    if (!self) return false;
+    int myCamp = Read<int>(self + 0x30);
+    int oCamp = Read<int>(obj + 0x30);
+    if (myCamp > 0 && myCamp == oCamp) return true;
+    return false;
+}
+
 void DrawMonster(ImDrawList *Draw) {
     if (autoRetribution) {
-        ImGui::GetBackgroundDrawList()->AddCircleFilled(ImVec2(retriTouchX, retriTouchY), 18.0f, IM_COL32(255, 255, 255, 180), 16);
-        ImGui::GetBackgroundDrawList()->AddCircle(ImVec2(retriTouchX, retriTouchY), 18.0f, IM_COL32(0, 0, 0, 255), 16, 2.5f);
+        ImGui::GetBackgroundDrawList()->AddCircleFilled(ImVec2(retriTouchX, retriTouchY), retriDotSize, IM_COL32(255, 255, 255, 110), 32);
+        ImGui::GetBackgroundDrawList()->AddCircle(ImVec2(retriTouchX, retriTouchY), retriDotSize, IM_COL32(0, 0, 0, 255), 32, 3.0f);
+        ImGui::GetBackgroundDrawList()->AddLine(ImVec2(retriTouchX - retriDotSize, retriTouchY), ImVec2(retriTouchX + retriDotSize, retriTouchY), IM_COL32(255, 0, 0, 160), 1.5f);
+        ImGui::GetBackgroundDrawList()->AddLine(ImVec2(retriTouchX, retriTouchY - retriDotSize), ImVec2(retriTouchX, retriTouchY + retriDotSize), IM_COL32(255, 0, 0, 160), 1.5f);
     }
     if (abs_ScreenX < abs_ScreenY) return;
     
@@ -391,8 +421,7 @@ void DrawMonster(ImDrawList *Draw) {
             continue;
         }
 
-        auto is_team = Read<bool>(Objaddr + m_bSameCampType);
-        if (is_team) {
+        if (!g_showTeam && IsTeammate(Objaddr)) {
             continue;
         }
         auto HeroID = Read<int>(Objaddr + m_ID);
@@ -752,7 +781,10 @@ void CheckAndTriggerRetribution() {
                 // retri CD kira-kira 30s+; kalau tap pertama meleset (button geser/posisi,
                 // target sembuh lagi, dll) kita coba ulang tiap retriRetryMs selama target
                 // masih hidup & eligible, sampai target mati.
-                Touch_Tap((int) retriTouchX, (int) retriTouchY, retriHoldMs);
+                if (g_retriNativeX >= 0 && g_retriNativeY >= 0)
+                    Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
+                else
+                    Touch_Tap((int) retriTouchX, (int) retriTouchY, retriHoldMs);
                 lastRetriTriggered[i] = true;
                 lastRetriTapMs[i] = now;
             } else if (now - lastRetriTapMs[i] >= (uint64_t) retriRetryMs) {
@@ -903,7 +935,7 @@ void DrawMinimapESP(ImDrawList* draw) {
         long Objaddr = getPtr641(playerList + (i << 3));
         if (!Objaddr) continue;
 
-        if (Read<bool>(Objaddr + m_bSameCampType)) continue;
+        if (!g_showTeam && IsTeammate(Objaddr)) continue;
         if (Read<bool>(Objaddr + m_bDeath)) continue;
 
         Vector3A pos{};
@@ -1025,9 +1057,9 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v0.3");
+    ImGui::TextDisabled("MLBB v0.4");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
-    ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "中文");
+    ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
     float bx = w - 118.0f;
     ImGui::SetCursorPos(ImVec2(bx, 6));
@@ -1045,45 +1077,73 @@ void Layout_tick_UI() {
 
     if (ImGui::BeginTabBar("####", ImGuiTabBarFlags_Reorderable)) {
 
-        if (ImGui::BeginTabItem(TR("ESP", "透视"))) {
-            SectionHeader(TR("Player ESP", "玩家透视"));
-            ImGui::Checkbox(TR("Line to Enemy", "连线"), &drawMHealth);
-            ImGui::Checkbox(TR("Hero Icon", "英雄头像"), &iconhero);
-            ImGui::Checkbox(TR("Distance & Name", "距离和名字"), &drawMDistance);
-            ImGui::Checkbox(TR("Health Bar", "血条"), &drawMHealthBar);
-            ImGui::Checkbox(TR("Mana Bar", "蓝条"), &drawMMpBar);
-            ImGui::Checkbox(TR("Skill CD Status", "技能CD状态"), &drawMSkillCD);
+        if (ImGui::BeginTabItem(TR("ESP", "ESP"))) {
+            SectionHeader(TR("Player ESP", "Player ESP"));
+            ImGui::Checkbox(TR("Line to Enemy", "Line ke Musuh"), &drawMHealth);
+            ImGui::Checkbox(TR("Hero Icon", "Icon Hero"), &iconhero);
+            ImGui::Checkbox(TR("Distance & Name", "Jarak & Nama"), &drawMDistance);
+            ImGui::Checkbox(TR("Health Bar", "Bar HP"), &drawMHealthBar);
+            ImGui::Checkbox(TR("Mana Bar", "Bar MP"), &drawMMpBar);
+            ImGui::Checkbox(TR("Skill CD Status", "Status CD Skill"), &drawMSkillCD);
+            ImGui::Spacing();
+            ImGui::Checkbox(TR("Show Teammates (ally too)", "Tampilkan Teman (sekutu)"), &g_showTeam);
+            ImGui::Checkbox(TR("Team detect via camp", "Deteksi Tim via Camp"), &g_campCheck);
+            ImGui::TextDisabled(TR("Default: enemies only. Turn ON to see allies.", "Default: musuh saja. Nyalakan untuk lihat sekutu."));
 
-            SectionHeader(TR("Alert", "提醒"));
-            ImGui::Checkbox(TR("Alert Lord Under Attack", "大龙被攻击提醒"), &drawAlertUnderAttack);
+            SectionHeader(TR("Alert", "Alert"));
+            ImGui::Checkbox(TR("Alert Lord Under Attack", "Alert Lord Diserang"), &drawAlertUnderAttack);
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(TR("Drone", "视角"))) {
-            SectionHeader(TR("Drone View", "无人机视角"));
-            ImGui::Checkbox(TR("Enable Drone View", "开启无人机视角"), &droneView);
-            ImGui::SliderFloat(TR("Height", "高度"), &droneHeight, 5.0f, 60.0f, "%.0f");
-            ImGui::TextDisabled(TR("Higher = more top-down view", "越高越接近俯视"));
+        if (ImGui::BeginTabItem(TR("Drone", "Drone"))) {
+            SectionHeader(TR("Safety", "Keamanan"));
+            ImGui::Checkbox(TR("Safe Mode (no memory write)", "Safe Mode (tanpa write memori)"), &safeMode);
+            if (safeMode) {
+                ImGui::TextColored(ImColor(255, 120, 120, 255), TR("Safe Mode ON: tidak ada memory write ke game.", "Safe Mode ON: tidak ada memory write ke game."));
+            }
+            SectionHeader(TR("Drone View", "Drone View"));
+            if (safeMode) {
+                ImGui::TextDisabled(TR("Matikan Safe Mode dulu untuk pakai Drone View.", "Matikan Safe Mode dulu untuk pakai Drone View."));
+            } else {
+                ImGui::Checkbox(TR("Enable Drone View", "Aktifkan Drone View"), &droneView);
+                ImGui::SliderFloat(TR("Height", "Tinggi"), &droneHeight, 5.0f, 60.0f, "%.0f");
+                ImGui::TextDisabled(TR("Higher = more top-down view", "Makin tinggi = makin top-down"));
+            }
+            ImGui::TextDisabled(TR("Drone menulis FOV kamera ke memori game (risiko ban).", "Drone menulis FOV kamera ke memori game (risiko ban)."));
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(TR("Auto Retri", "自动惩戒"))) {
-            SectionHeader(TR("Auto Retribution", "自动惩戒"));
-            ImGui::Checkbox(TR("Enable Auto Retri", "开启自动惩戒"), &autoRetribution);
+        if (ImGui::BeginTabItem(TR("Auto Retri", "Auto Retri"))) {
+            SectionHeader(TR("Auto Retribution", "Auto Retri"));
+            ImGui::Checkbox(TR("Enable Auto Retri", "Aktifkan Auto Retri"), &autoRetribution);
 
             ImGui::Spacing();
-            ImGui::TextDisabled(TR("Retri button position (screen coords)", "惩戒按钮位置 (屏幕坐标)"));
+            ImGui::TextDisabled(TR("Retri button position (screen coords)", "Posisi tombol retri (koordinat layar)"));
             ImGui::SliderFloat("X", &retriTouchX, 0.0f, 3000.0f, "%.0f");
             ImGui::SliderFloat("Y", &retriTouchY, 0.0f, 1500.0f, "%.0f");
+            ImGui::SliderFloat(TR("Dot Size", "Ukuran Dot"), &retriDotSize, 10.0f, 90.0f, "%.0f");
+            if (g_retriNativeX < 0 || g_retriNativeY < 0) {
+                if (ImGui::Button(TR("Set Dot: tap tombol retri sekali", "Set Dot: ketuk tombol retri sekali"), ImVec2(-1, 34))) {
+                    g_retriCapture = true;
+                }
+            } else {
+                ImGui::TextColored(ImColor(120, 255, 160, 255),
+                    TR("Dot calibrated (tap presisi aktif)", "Dot terkalibrasi (tap presisi aktif)"));
+                if (ImGui::Button(TR("Re-set Dot", "Set Ulang Dot"), ImVec2(-1, 34))) {
+                    g_retriNativeX = g_retriNativeY = -1;
+                    g_retriCapture = true;
+                }
+            }
+            ImGui::TextDisabled(TR("Lingkaran putih + cross = posisi tombol retri. Pindahkan via X/Y atau pakai Set Dot.", "Lingkaran putih + cross = posisi tombol retri. Pindahkan via X/Y atau pakai Set Dot."));
 
-            SectionHeader(TR("Damage & Timing", "伤害与时序"));
+            SectionHeader(TR("Damage & Timing", "Damage & Timing"));
             if (Oneself) {
                 int lvl = Read<int>(Oneself + 0x190);
                 int kw = Read<int>(Oneself + 0xa20);
                 int dmg = CalculateRetriDamage(lvl, kw) + retriDmgBonus;
                 if (dmg < 0) dmg = 0;
                 ImGui::TextColored(ImColor(255, 200, 60, 255),
-                    TR("Retri dmg now: %d  (Lv %d | %d jungle kills)", "当前惩戒伤害: %d (等级 %d | 击杀 %d)"), dmg, lvl, kw);
+                    TR("Retri dmg now: %d  (Lv %d | %d jungle kills)", "Damage retri: %d (Lv %d | kill %d)"), dmg, lvl, kw);
                 int ready = 0;
                 for (int t = 0; t < MonsterCount; t++) {
                     if (!monster[t].isValid || monster[t].isDead) continue;
@@ -1091,74 +1151,74 @@ void Layout_tick_UI() {
                     if (monster[t].health <= dmg) ready++;
                 }
                 ImGui::TextColored(ImColor(120, 255, 160, 255),
-                    TR("Monster killable right now: %d", "当前可击杀野怪: %d"), ready);
+                    TR("Monster killable right now: %d", "Bisa dibunuh skrg: %d"), ready);
             } else {
-                ImGui::TextDisabled(TR("(no monster data yet - enter a match)", "(暂无野怪数据 - 请进入对局)"));
+                ImGui::TextDisabled(TR("(no monster data yet - enter a match)", "(belum ada data - masuk match dulu)"));
             }
-            ImGui::SliderInt(TR("Dmg Bonus", "伤害修正"), &retriDmgBonus, -500, 1000, "%d");
-            ImGui::SliderInt(TR("Hold ms", "按住时长(ms)"), &retriHoldMs, 30, 300, "%d ms");
-            ImGui::SliderInt(TR("Retry every", "重试间隔"), &retriRetryMs, 500, 6000, "%d ms");
-            ImGui::SliderFloat(TR("Max Distance", "最大距离"), &retriMaxDist, 1.0f, 20.0f, "%.1f");
-            ImGui::TextDisabled(TR("Auto retries every few sec while target is killable.", "目标可击杀时会自动每几秒重试。"));
+            ImGui::SliderInt(TR("Dmg Bonus", "Dmg Bonus"), &retriDmgBonus, -500, 1000, "%d");
+            ImGui::SliderInt(TR("Hold ms", "Tahan (ms)"), &retriHoldMs, 30, 300, "%d ms");
+            ImGui::SliderInt(TR("Retry every", "Retry tiap"), &retriRetryMs, 500, 6000, "%d ms");
+            ImGui::SliderFloat(TR("Max Distance", "Jarak Max"), &retriMaxDist, 1.0f, 20.0f, "%.1f");
+            ImGui::TextDisabled(TR("Auto retries every few sec while target is killable.", "Auto retry tiap beberapa detik selama target masih bisa dibunuh."));
 
-            SectionHeader(TR("Target", "目标"));
-            ImGui::Checkbox(TR("Buff Red", "红Buff"), &AutoRetributionRed);
-            ImGui::Checkbox(TR("Buff Blue", "蓝Buff"), &AutoRetributionBlue);
-            ImGui::Checkbox(TR("Lord", "大龙"), &AutoRetributionLord);
-            ImGui::Checkbox(TR("Turtle", "小龙"), &AutoRetributionTurtle);
-            ImGui::Checkbox(TR("Crab", "螃蟹"), &AutoRetributionCrab);
-            ImGui::Checkbox(TR("Lito", "小蜥蜴"), &AutoRetributionLito);
+            SectionHeader(TR("Target", "Target"));
+            ImGui::Checkbox(TR("Buff Red", "Buff Merah"), &AutoRetributionRed);
+            ImGui::Checkbox(TR("Buff Blue", "Buff Biru"), &AutoRetributionBlue);
+            ImGui::Checkbox(TR("Lord", "Lord"), &AutoRetributionLord);
+            ImGui::Checkbox(TR("Turtle", "Turtle"), &AutoRetributionTurtle);
+            ImGui::Checkbox(TR("Crab", "Crab"), &AutoRetributionCrab);
+            ImGui::Checkbox(TR("Lito", "Lito"), &AutoRetributionLito);
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(TR("Minimap", "小地图"))) {
-            SectionHeader(TR("Minimap ESP", "小地图透视"));
-            ImGui::Checkbox(TR("Minimap", "小地图"), &MinimapIcon);
+        if (ImGui::BeginTabItem(TR("Minimap", "Minimap"))) {
+            SectionHeader(TR("Minimap ESP", "Minimap ESP"));
+            ImGui::Checkbox(TR("Minimap", "Minimap"), &MinimapIcon);
             ImGui::SameLine();
-            ImGui::Checkbox(TR("Hide Frame", "隐藏边框"), &HideLine);
-            ImGui::SliderInt(TR("Size", "大小"), &MinimapSize, 100, 600);
-            ImGui::SliderInt(TR("Pos X", "位置X"), &MinimapPos, 0, 800);
-            ImGui::SliderInt(TR("Pos Y", "位置Y"), &MinimapPosY, 0, 800);
-            ImGui::SliderInt(TR("Icon Size", "图标大小"), &g_ICSize, 1, 100);
+            ImGui::Checkbox(TR("Hide Frame", "Sembunyikan Frame"), &HideLine);
+            ImGui::SliderInt(TR("Size", "Ukuran"), &MinimapSize, 100, 600);
+            ImGui::SliderInt(TR("Pos X", "Pos X"), &MinimapPos, 0, 800);
+            ImGui::SliderInt(TR("Pos Y", "Pos Y"), &MinimapPosY, 0, 800);
+            ImGui::SliderInt(TR("Icon Size", "Ukuran Icon"), &g_ICSize, 1, 100);
 
-            SectionHeader(TR("Calibration", "校准"));
-            ImGui::SliderFloat(TR("Angle", "角度"), &g_MapAngle, 0.0f, 360.0f);
+            SectionHeader(TR("Calibration", "Kalibrasi"));
+            ImGui::SliderFloat(TR("Angle", "Angle"), &g_MapAngle, 0.0f, 360.0f);
             ImGui::SliderFloat("X Mult", &g_Res0_MultX, 0.1f, 3.0f);
             ImGui::SliderFloat("Y Mult", &g_Res0_MultY, 0.1f, 3.0f);
             ImGui::SliderFloat("Off X", &g_Res1_OffsetX, -200.0f, 200.0f);
             ImGui::SliderFloat("Off Y", &g_Res1_OffsetY, -200.0f, 200.0f);
-            ImGui::SliderFloat(TR("Scale", "缩放"), &g_MinimapScale, 10.0f, 150.0f);
+            ImGui::SliderFloat(TR("Scale", "Scale"), &g_MinimapScale, 10.0f, 150.0f);
             ImGui::TextDisabled(TR("Angle = map rotation. Adjust so enemy dots align with in-game minimap.", "Angle = rotasi peta. Atur agar titik musuh sejajar dgn minimap asli."));
             ImGui::EndTabItem();
         }
 
-        if (ImGui::BeginTabItem(TR("Settings", "设置"))) {
-            SectionHeader(TR("Display", "显示"));
+        if (ImGui::BeginTabItem(TR("Settings", "Pengaturan"))) {
+            SectionHeader(TR("Display", "Tampilan"));
             const char* themes[] = { "Neon Dark", "Light", "Classic" };
-            if (ImGui::Combo(TR("Theme", "主题"), &theme, themes, IM_ARRAYSIZE(themes))) {
+            if (ImGui::Combo(TR("Theme", "Tema"), &theme, themes, IM_ARRAYSIZE(themes))) {
                 ApplyTheme();
             }
             static float opacity = 1.0f;
-            ImGui::SliderFloat(TR("Opacity", "透明度"), &opacity, 0.1f, 1.0f);
+            ImGui::SliderFloat(TR("Opacity", "Opacity"), &opacity, 0.1f, 1.0f);
             ImGui::GetStyle().Alpha = opacity;
 
-            SectionHeader(TR("Language", "语言"));
-            static int langSel = 1;
-            const char* langs[] = { "English", "中文" };
-            ImGui::Combo(TR("UI Language", "界面语言"), &langSel, langs, IM_ARRAYSIZE(langs));
+            SectionHeader(TR("Language", "Bahasa"));
+            static int langSel = 0;   // default: English (dulu default 中文 - bikin pusing)
+            const char* langs[] = { "English", "Indonesia" };
+            ImGui::Combo(TR("UI Language", "Bahasa UI"), &langSel, langs, IM_ARRAYSIZE(langs));
             langEN = (langSel == 0);
 
-            SectionHeader(TR("Actions", "操作"));
-            if (ImGui::Button(TR(" Exit Cheat ", " 退出外挂 "), ImVec2(-1, 40))) {
+            SectionHeader(TR("Actions", "Aksi"));
+            if (ImGui::Button(TR(" Exit Cheat ", " Keluar Cheat "), ImVec2(-1, 40))) {
                 main_thread_flag = false;
             }
             ImGui::Spacing();
-            if (ImGui::Button(TR(" Unload (exit) ", " 卸载并退出 "), ImVec2(-1, 40))) {
+            if (ImGui::Button(TR(" Unload (exit) ", " Unload (keluar) "), ImVec2(-1, 40))) {
                 exit(0);
             }
             ImGui::Spacing();
-            ImGui::TextDisabled(TR("Volume − = minimize menu | Volume + = expand", "音量- = 最小化菜单 | 音量+ = 展开"));
-            ImGui::TextDisabled(TR("ESP/minimap tetap jalan saat menu di-minimize.", "菜单最小化时 ESP/小地图仍然运行。"));
+            ImGui::TextDisabled(TR("Volume − = minimize menu | Volume + = expand", "Vol − = minimize | Vol + = expand"));
+            ImGui::TextDisabled(TR("ESP/minimap tetap jalan saat menu di-minimize.", "Saat minimized, ESP/minimap tetap jalan."));
             ImGui::EndTabItem();
         }
 
@@ -1231,7 +1291,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v0.3\n");
+    printf("[+] PANXCZ MLBB v0.4\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -1273,6 +1333,13 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         MonsterRetribution();
         CheckAndTriggerRetribution();
         ApplyDroneView();
+        // hasil kalibrasi 1-tap: gerakkan dot marker ke posisi logical yang sama
+        if (g_retriLogicalX >= 0.0f) {
+            retriTouchX = g_retriLogicalX;
+            retriTouchY = g_retriLogicalY;
+            g_retriLogicalX = -1.0f;
+            g_retriLogicalY = -1.0f;
+        }
         //RoomInfoList();
         drawBegin();
         Layout_tick_UI();
