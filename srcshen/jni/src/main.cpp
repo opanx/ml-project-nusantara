@@ -72,6 +72,7 @@ bool drawMSkillCD = false;
 bool droneView = false;
 float droneHeight = 18.0f;
 bool langEN = true;
+int g_langSel = 0;      // 0=English 1=Indonesia (default English)
 float RadiusCir = 50.0f;
 long libbase = 0;
 
@@ -1032,6 +1033,10 @@ void Layout_tick_UI() {
         if (ImGui::Button(oxorany("⚡ PANXCZ ▢"), ImVec2(190, 46))) {
             g_menuMinimized = false;
         }
+        // show FPS saat minimized biar tetap bisa dipantau
+        ImGui::SetNextItemWidth(190);
+        ImGui::TextColored(ImColor(0, 255, 140, 255), "FPS: %.0f  |  %s", io.Framerate, langEN ? "EN" : "ID");
+        ImGui::TextDisabled(TR("ESP & minimap tetap jalan", "ESP & minimap tetap jalan"));
         // overlay tetap jalan walau menu di-minimize (draw sebelum End supaya g_window valid)
         if (MinimapIcon) DrawMinimapESP(ImGui::GetForegroundDrawList());
         DrawMonster(ImGui::GetForegroundDrawList());
@@ -1057,7 +1062,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v0.4");
+    ImGui::TextDisabled("MLBB v0.5");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1203,10 +1208,9 @@ void Layout_tick_UI() {
             ImGui::GetStyle().Alpha = opacity;
 
             SectionHeader(TR("Language", "Bahasa"));
-            static int langSel = 0;   // default: English (dulu default 中文 - bikin pusing)
             const char* langs[] = { "English", "Indonesia" };
-            ImGui::Combo(TR("UI Language", "Bahasa UI"), &langSel, langs, IM_ARRAYSIZE(langs));
-            langEN = (langSel == 0);
+            ImGui::Combo(TR("UI Language", "Bahasa UI"), &g_langSel, langs, IM_ARRAYSIZE(langs));
+            langEN = (g_langSel == 0);
 
             SectionHeader(TR("Actions", "Aksi"));
             if (ImGui::Button(TR(" Exit Cheat ", " Keluar Cheat "), ImVec2(-1, 40))) {
@@ -1230,6 +1234,95 @@ void Layout_tick_UI() {
     DrawMonster(ImGui::GetForegroundDrawList());
     g_window = ImGui::GetCurrentWindow();
     ImGui::End();
+}
+
+// ===== Simpan/muat kalibrasi & pengaturan (biar ga reset tiap run) =====
+#define CFG_PATH "/data/local/tmp/panxcz_mlbb.cfg"
+
+static void SaveCfg() {
+    std::ofstream f(CFG_PATH, std::ios::trunc);
+    if (!f.is_open()) return;
+    auto w = [&](const char *k, long long v) { f << k << "=" << v << "\n"; };
+    w("langEN", langEN ? 1 : 0);
+    w("theme", theme);
+    w("safeMode", safeMode ? 1 : 0);
+    w("showTeam", g_showTeam ? 1 : 0);
+    w("campCheck", g_campCheck ? 1 : 0);
+    w("minimapIcon", MinimapIcon ? 1 : 0);
+    w("hideLine", HideLine ? 1 : 0);
+    w("minimapSize", MinimapSize);
+    w("minimapPos", MinimapPos);
+    w("minimapPosY", MinimapPosY);
+    w("icSize", g_ICSize);
+    w("mapAngle", (long long) (g_MapAngle * 100.0f));
+    w("multX", (long long) (g_Res0_MultX * 100.0f));
+    w("multY", (long long) (g_Res0_MultY * 100.0f));
+    w("offX", (long long) (g_Res1_OffsetX * 100.0f));
+    w("offY", (long long) (g_Res1_OffsetY * 100.0f));
+    w("mapScale", (long long) (g_MinimapScale * 100.0f));
+    w("retriX", (long long) retriTouchX);
+    w("retriY", (long long) retriTouchY);
+    w("retriDot", (long long) retriDotSize);
+    w("retriHold", retriHoldMs);
+    w("retriRetry", retriRetryMs);
+    w("retriBonus", retriDmgBonus);
+    w("retriDist", (long long) (retriMaxDist * 100.0f));
+    w("retriNX", g_retriNativeX);
+    w("retriNY", g_retriNativeY);
+    w("espHealth", drawMHealth ? 1 : 0);
+    w("espIcon", iconhero ? 1 : 0);
+    w("espDist", drawMDistance ? 1 : 0);
+    w("espHpBar", drawMHealthBar ? 1 : 0);
+    w("espMpBar", drawMMpBar ? 1 : 0);
+    w("espSkillCd", drawMSkillCD ? 1 : 0);
+    w("alertLord", drawAlertUnderAttack ? 1 : 0);
+    f.close();
+}
+
+static void LoadCfg() {
+    std::ifstream f(CFG_PATH);
+    if (!f.is_open()) return;
+    std::string line;
+    while (std::getline(f, line)) {
+        auto eq = line.find('=');
+        if (eq == std::string::npos) continue;
+        std::string k = line.substr(0, eq);
+        long long v = atoll(line.c_str() + (long) eq + 1);
+        if (k == "langEN") { langEN = v != 0; g_langSel = langEN ? 0 : 1; }
+        else if (k == "theme") theme = (int) v;
+        else if (k == "safeMode") safeMode = v != 0;
+        else if (k == "showTeam") g_showTeam = v != 0;
+        else if (k == "campCheck") g_campCheck = v != 0;
+        else if (k == "minimapIcon") MinimapIcon = v != 0;
+        else if (k == "hideLine") HideLine = v != 0;
+        else if (k == "minimapSize") MinimapSize = (int) v;
+        else if (k == "minimapPos") MinimapPos = (int) v;
+        else if (k == "minimapPosY") MinimapPosY = (int) v;
+        else if (k == "icSize") g_ICSize = (int) v;
+        else if (k == "mapAngle") g_MapAngle = (float) v / 100.0f;
+        else if (k == "multX") g_Res0_MultX = (float) v / 100.0f;
+        else if (k == "multY") g_Res0_MultY = (float) v / 100.0f;
+        else if (k == "offX") g_Res1_OffsetX = (float) v / 100.0f;
+        else if (k == "offY") g_Res1_OffsetY = (float) v / 100.0f;
+        else if (k == "mapScale") g_MinimapScale = (float) v / 100.0f;
+        else if (k == "retriX") retriTouchX = (float) v;
+        else if (k == "retriY") retriTouchY = (float) v;
+        else if (k == "retriDot") retriDotSize = (float) v;
+        else if (k == "retriHold") retriHoldMs = (int) v;
+        else if (k == "retriRetry") retriRetryMs = (int) v;
+        else if (k == "retriBonus") retriDmgBonus = (int) v;
+        else if (k == "retriDist") retriMaxDist = (float) v / 100.0f;
+        else if (k == "retriNX") g_retriNativeX = (int) v;
+        else if (k == "retriNY") g_retriNativeY = (int) v;
+        else if (k == "espHealth") drawMHealth = v != 0;
+        else if (k == "espIcon") iconhero = v != 0;
+        else if (k == "espDist") drawMDistance = v != 0;
+        else if (k == "espHpBar") drawMHealthBar = v != 0;
+        else if (k == "espMpBar") drawMMpBar = v != 0;
+        else if (k == "espSkillCd") drawMSkillCD = v != 0;
+        else if (k == "alertLord") drawAlertUnderAttack = v != 0;
+    }
+    f.close();
 }
 
 // Volume − -> minimize menu, Volume + -> expand (tanpa grab, sistem tetap normal)
@@ -1291,7 +1384,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v0.4\n");
+    printf("[+] PANXCZ MLBB v0.5\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -1323,13 +1416,16 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         return -1;
     }
     Touch_Init(displayInfo.width, displayInfo.height, displayInfo.orientation, false);
+    LoadCfg();   // muat kalibrasi & pengaturan terakhir (biar minimap/dot ga reset)
     pthread_t volTh;
     if (pthread_create(&volTh, nullptr, VolumeKeyWatcher, nullptr) == 0) {
         pthread_detach(volTh);
         printf("[+] Volume key control active (Vol- minimize / Vol+ expand)\n");
     }
     ApplyTheme();
+    int saveTick = 0;
     while (main_thread_flag) {
+        if ((++saveTick % 1500) == 0) SaveCfg();   // autosave tiap ~1.5 detik
         MonsterRetribution();
         CheckAndTriggerRetribution();
         ApplyDroneView();
@@ -1346,6 +1442,7 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         drawEnd();
         usleep(1000);
     }
+    SaveCfg();
     shutdown();
     Touch_Close();
     return 0;

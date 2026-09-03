@@ -44,12 +44,6 @@ struct targ {
     float S2TY;
 };
 
-static struct {
-    input_event downEvent[2]{{{}, EV_KEY, BTN_TOUCH,       1},
-                             {{}, EV_KEY, BTN_TOOL_FINGER, 1}};
-    input_event event[512]{0};
-} input;
-
 static targ targF[maxE];
 
 static touchObj Finger[maxE][maxF];
@@ -61,6 +55,77 @@ static float scale_x, scale_y;
 static bool Touch_initialized = false;
 
 static bool Touch_readOnly = false;
+
+// ===== Injector sentuhan sintetik (auto-retri) =====
+// Penting: pakai SLOT sendiri (12) yg TIDAK dipakai driver asli, jadi tap sintetik
+// TIDAK nyatu sama jari asli (mis. jempol kiri di joystick). Dulu digabung ke slot 0
+// -> tap retri malah kaya gerak joystick / nyentuh tombol lain.
+static const int SYN_SLOT     = 12;
+static const int SYN_TRACKING = 0x4000;
+static bool g_synDown = false;
+static volatile int g_realContacts = 0;   // jari asli yg lagi nempel (buat BTN_TOUCH up)
+
+static void SendTapUp();   // forward decl (dipakai SendTapDown)
+
+static void SendTapDown(int nx, int ny) {
+    if (!Touch_initialized || nowfd <= 0) return;
+    if (g_synDown) SendTapUp();
+    struct input_event ev[10];
+    int c = 0;
+    ev[c++] = {EV_ABS, ABS_MT_SLOT, SYN_SLOT};
+    ev[c++] = {EV_ABS, ABS_MT_TRACKING_ID, SYN_TRACKING};
+    ev[c++] = {EV_ABS, ABS_MT_POSITION_X, nx};
+    ev[c++] = {EV_ABS, ABS_MT_POSITION_Y, ny};
+    ev[c++] = {EV_ABS, ABS_X, nx};
+    ev[c++] = {EV_ABS, ABS_Y, ny};
+    ev[c++] = {EV_SYN, SYN_MT_REPORT, 0};
+    ev[c++] = {EV_KEY, BTN_TOUCH, 1};
+    ev[c++] = {EV_SYN, SYN_REPORT, 0};
+    (void)!write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    g_synDown = true;
+}
+
+static void SendTapMove(int nx, int ny) {
+    if (!Touch_initialized || nowfd <= 0 || !g_synDown) return;
+    struct input_event ev[5];
+    int c = 0;
+    ev[c++] = {EV_ABS, ABS_MT_SLOT, SYN_SLOT};
+    ev[c++] = {EV_ABS, ABS_MT_POSITION_X, nx};
+    ev[c++] = {EV_ABS, ABS_MT_POSITION_Y, ny};
+    ev[c++] = {EV_ABS, ABS_X, nx};
+    ev[c++] = {EV_ABS, ABS_Y, ny};
+    ev[c++] = {EV_SYN, SYN_REPORT, 0};
+    (void)!write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+}
+
+static void SendTapUp() {
+    if (!Touch_initialized || nowfd <= 0) return;
+    if (!g_synDown) return;
+    struct input_event ev[6];
+    int c = 0;
+    ev[c++] = {EV_ABS, ABS_MT_SLOT, SYN_SLOT};
+    ev[c++] = {EV_ABS, ABS_MT_TRACKING_ID, -1};
+    ev[c++] = {EV_SYN, SYN_MT_REPORT, 0};
+    if (g_realContacts <= 0) {
+        ev[c++] = {EV_KEY, BTN_TOUCH, 0};
+    }
+    ev[c++] = {EV_SYN, SYN_REPORT, 0};
+    (void)!write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    g_synDown = false;
+}
+
+// logical (layar overlay) -> native device coordinate
+static void LogicalToNative(float xt, float yt, int *ox, int *oy) {
+    float x = xt, y = yt;
+    switch (orientation) {
+        case 1:  x = screenHeight - yt; y = xt; break;
+        case 2:  x = screenWidth - xt;  y = screenHeight - yt; break;
+        case 3:  x = yt;                y = screenWidth - xt;  break;
+        default: x = xt;                y = yt; break;
+    }
+    *ox = (int) (x * scale_x);
+    *oy = (int) (y * scale_y);
+}
 
 static bool checkDeviceIsTouch(int fd);
 static void genRandomString(char *string, int length) {
@@ -87,86 +152,6 @@ static void genRandomString(char *string, int length) {
 }
 
 
-static void Upload() {
-    static bool bTouch = false;
-    static bool isFirstDown = true;
-    while (bTouch);
-    bTouch = true;
-    int tmpCnt = 0, tmpCnt2 = 0, i, j;
-    for (i = 0; i < fdNum; i++) {
-        for (j = 0; j < maxF; j++) {
-            if (Finger[i][j].isDown) {
-                if (tmpCnt2++ > 10) {
-                    goto finish;
-                }
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_X;
-                input.event[tmpCnt].value = Finger[i][j].x;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_Y;
-                input.event[tmpCnt].value = Finger[i][j].y;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_MT_POSITION_X;
-                input.event[tmpCnt].value = Finger[i][j].x;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_MT_POSITION_Y;
-                input.event[tmpCnt].value = Finger[i][j].y;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_MT_TRACKING_ID;
-                input.event[tmpCnt].value = Finger[i][j].id;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_SYN;
-                input.event[tmpCnt].code = SYN_MT_REPORT;
-                input.event[tmpCnt].value = 0;
-                tmpCnt++;
-            }
-        }
-    }
-    finish:
-    bool is = false;
-    if (tmpCnt == 0) {
-        input.event[tmpCnt].type = EV_SYN;
-        input.event[tmpCnt].code = SYN_MT_REPORT;
-        input.event[tmpCnt].value = 0;
-        tmpCnt++;
-        if (!isFirstDown) {
-            isFirstDown = true;
-            input.event[tmpCnt].type = EV_KEY;
-            input.event[tmpCnt].code = BTN_TOUCH;
-            input.event[tmpCnt].value = 0;
-            tmpCnt++;
-            input.event[tmpCnt].type = EV_KEY;
-            input.event[tmpCnt].code = BTN_TOOL_FINGER;
-            input.event[tmpCnt].value = 0;
-            tmpCnt++;
-        }
-    } else {
-        is = true;
-    }
-    input.event[tmpCnt].type = EV_SYN;
-    input.event[tmpCnt].code = SYN_REPORT;
-    input.event[tmpCnt].value = 0;
-    tmpCnt++;
-
-    if (is && isFirstDown) {
-        isFirstDown = false;
-        write(nowfd, &input, sizeof(struct input_event) * (tmpCnt + 2));
-    } else {
-        write(nowfd, input.event, sizeof(struct input_event) * tmpCnt);
-    }
-
-    bTouch = false;
-}
-
 static void *TypeA(void *arg) {
     targ tmp = *(targ *) arg;
     int i = tmp.fdNum;
@@ -189,11 +174,17 @@ static void *TypeA(void *arg) {
                     continue;
                 }
                 if (ie.code == ABS_MT_TRACKING_ID) {
-                    if (ie.value == -1) {
-                        Finger[i][latest].isDown = false;
-                    } else {
+                    bool was = Finger[i][latest].isDown;
+                    bool nowDown = (ie.value != -1);
+                    if (was != nowDown) {
+                        g_realContacts += nowDown ? 1 : -1;
+                        if (g_realContacts < 0) g_realContacts = 0;
+                    }
+                    if (nowDown) {
                         Finger[i][latest].id = (i * 2 + 1) * maxF + latest;
                         Finger[i][latest].isDown = true;
+                    } else {
+                        Finger[i][latest].isDown = false;
                     }
                     continue;
                 }
@@ -278,7 +269,7 @@ static void *TypeA(void *arg) {
         // Verbatim mirror: teruskan event asli apa adanya (ABS_MT_SLOT, TRACKING_ID,
         // urutan & timing driver asli) ke uinput clone. Game terima stream identik dgn
         // kondisi tanpa overlay -> gesture/flick MLBB (quick emote, slide chat) tetap
-        // natural & tanpa delay rebuild. Upload() hanya dipakai utk tap sintetik (retri).
+        // natural. Tap sintetik (retri) injeksi lewat slot terpisah (SendTap*).
         if (!Touch_readOnly && nowfd > 0) {
             ssize_t wrc = write(nowfd, inputEvent, (size_t) readSize);
             (void) wrc;
@@ -501,62 +492,28 @@ void Touch_Close() {
         }
         fdNum = 0;
         memset(Finger, 0, sizeof(Finger));
-        memset(input.event, 0, sizeof(input.event));
         Touch_initialized = false;
     }
 }
 
 void Touch_Down(float xt, float yt) {
-    static int x, y;
-    x = 0, y = 0;
-    switch (orientation) {
-        case 1: {
-            x = screenHeight - yt;
-            y = xt;
-            break;
-        }                          
-        case 2: {
-            x = screenWidth - xt;
-            y = screenHeight - yt;
-            break;
-        }
-        case 3: {
-            y = screenWidth - xt;
-            x = yt;
-            break;
-        }
-        default: {
-            x = xt;
-            y = yt;
-            break;
-        }
-    }
-    touchObj &touch = Finger[0][9];
-    touch.id = 19;
-    touch.x = (int) (x * ::scale_x);
-    touch.y = (int) (y * ::scale_y);        
-    touch.isDown = true;
-    Upload();
+    int x, y;
+    LogicalToNative(xt, yt, &x, &y);
+    SendTapDown(x, y);
 }
 
-void Touch_Move(float x, float y) {
-    Touch_Down(x, y);
+void Touch_Move(float xt, float yt) {
+    int x, y;
+    LogicalToNative(xt, yt, &x, &y);
+    SendTapMove(x, y);
 }
 
 void Touch_Up() {
-    touchObj &touch = Finger[0][9];
-    touch.isDown = false;
-    Upload();
+    SendTapUp();
 }
 
 void Touch_TapNative(int x, int y, int holdMs) {
-    touchObj &touch = Finger[0][9];
-    touch.id = 19;
-    touch.x = x;
-    touch.y = y;
-    touch.isDown = true;
-    Upload();
+    SendTapDown(x, y);
     usleep((useconds_t)(holdMs > 0 ? holdMs : 80) * 1000);
-    touch.isDown = false;
-    Upload();
+    SendTapUp();
 }

@@ -52,14 +52,20 @@ jobs:
           name: panxcz-mlbb
           path: release/
 
-      - name: Create pre-release v0.4
+      - name: Create pre-release v0.5
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.4
-          name: "Panxcz cheat mlbb v0.4 pre release"
+          tag_name: v0.5
+          name: "Panxcz cheat mlbb v0.5 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v0.4 pre release
+            ## Panxcz cheat mlbb v0.5 pre release
+
+            ### Fix v0.4 -> v0.5
+            - **Auto Retri tap sekarang di slot sentuh TERPISAH (slot 12)** - sebelumnya tap sintetik digabung ke slot 0, jadi pas jempol kiri pegang joystick, tap retri nyatu sama sentuhan joystick -> kaya nyentuh tombol lain / joystick gerak sendiri / retri ga kepencet. Sekarang tap retri jalan di slot sendiri, gak ganggu jari asli
+            - **Kalibrasi & pengaturan DISIMPAN otomatis** ke /data/local/tmp/panxcz_mlbb.cfg (autosave ~1.5 detik + pas exit) - minimap angle/scale/pos, dot retri + native coords, Dmg Bonus, tema, bahasa, Safe Mode, dll. Sekali set, gak reset lagi tiap buka
+            - **FPS tampil saat menu minimized** (pill nunjukin FPS + status)
+            - Pilihan bahasa (English/Indonesia) sinkron dengan yang tersimpan
 
             ### File
             | File | Type | Keterangan |
@@ -67,12 +73,11 @@ jobs:
             | `panxcz_mlbb` | ELF executable (arm64) | Cheat MLBB terbaru (ESP + Auto Retri + Minimap + Drone View) |
             | `dump_22.1.97.12061.cs` | Dump reference | Offsets & kelas untuk update berikutnya |
 
-            ### Fix v0.3 -> v0.4
-            - **Kalibrasi touch 1-tap (Set Dot)** - ketuk tombol "Set Dot", lalu tap sekali di tombol retri di layar game. Posisi disimpan dalam koordinat NATIVE perangkat, jadi auto-retri tap PERSIS di titik itu (bukan transform manual yang bisa meleset). Dot marker ikut pindah ke titik tsb + bisa digedein (Dot Size slider)
-            - **Auto Retri ga nyasar ke tombol lain** - pakai native coordinate hasil kalibrasi
-            - **Teman/sekutu ga di-show (default)** - ESP & minimap sekarang musuh doang + deteksi tim dobel: flag same-camp (0x2a9) + fallback iCamp (0x30). Ada toggle "Show Teammates" & "Team detect via camp" di tab ESP kalau mau ubah
-            - **Safe Mode (default ON)** - TIDAK ada memory write ke game (Drone View FOV write dimatikan). Anti ban. Drone cuma bisa dipakai kalau Safe Mode dimatikan manual + ada peringatan risiko
-            - **Bahasa 中文 diganti Indonesia** - pilihan bahasa jadi English / Indonesia, default English (dulu default 中文)
+            ### Fix v0.3 -> v0.4 (sebelumnya)
+            - Kalibrasi touch 1-tap (Set Dot) - native coords biar tap presisi
+            - Teman/sekutu ga di-show (default) + deteksi tim dobel (flag + camp)
+            - Safe Mode (default ON) - tidak ada memory write ke game
+            - Bahasa 中文 diganti Indonesia (English / Indonesia, default English)
 
             ### Fix v0.2 -> v0.3 (sebelumnya)
             - Touch passthrough verbatim mirror - gesture quick emote & slide chat natural
