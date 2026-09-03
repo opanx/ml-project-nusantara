@@ -25,6 +25,9 @@
 #include <fstream>
 #include <iostream>
 #include <sstream>
+#include <chrono>
+#include <sys/ioctl.h>
+#include <sys/select.h>
 #include <linux/input.h>
 #include <vector>
 #include <functional>
@@ -303,13 +306,14 @@ bool bMonster(int iValue) {
     return std::find(std::begin(ListMonsterId), std::end(ListMonsterId), iValue) != std::end(ListMonsterId);
 }
 
-void Touch_Tap(int x, int y) {
+void Touch_Tap(int x, int y, int holdMs = 80) {
      Touch_Down((float)x, (float)y);
-     usleep(80000);
+     usleep((useconds_t)(holdMs > 0 ? holdMs : 80) * 1000);
      Touch_Up();
 }
 
 bool lastRetriTriggered[20] = {false};
+uint64_t lastRetriTapMs[20] = {0};
 bool autoRetribution = false;
 bool AutoRetributionRed = false;
 bool AutoRetributionBlue = false;
@@ -320,6 +324,15 @@ bool AutoRetributionLito = false;
 
 float retriTouchX = 1575;
 float retriTouchY = 661;
+int retriHoldMs = 80;          // berapa lama tombol di-hold per tap
+int retriRetryMs = 2500;       // retry tap tiap X ms kalau target masih hidup
+int retriDmgBonus = 0;         // koreksi damage retri (kalau formula meleset)
+float retriMaxDist = 6.0f;     // jarak maksimum trigger
+
+static uint64_t NowMs() {
+    using namespace std::chrono;
+    return (uint64_t) duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+}
 
 void DrawMonster(ImDrawList *Draw) {
     if (autoRetribution) {
@@ -710,13 +723,15 @@ void CheckAndTriggerRetribution() {
     if (!Oneself || MonsterCount <= 0) return;
     int myLevel = Read<int>(Oneself + 0x190);
     int killWild = Read<int>(Oneself + 0xa20);
-    int retriDmg = CalculateRetriDamage(myLevel, killWild);
+    int retriDmg = CalculateRetriDamage(myLevel, killWild) + retriDmgBonus;
+    if (retriDmg < 0) retriDmg = 0;
+    uint64_t now = NowMs();
     for (int i = 0; i < MonsterCount; i++) {
         if (!monster[i].isValid || monster[i].isDead) {
             lastRetriTriggered[i] = false;
             continue;
         }
-        if (monster[i].distance > 5.0f) {
+        if (monster[i].distance > retriMaxDist) {
             lastRetriTriggered[i] = false;
             continue;
         }
@@ -734,8 +749,14 @@ void CheckAndTriggerRetribution() {
         }
         if (monster[i].health <= retriDmg) {
             if (!lastRetriTriggered[i]) {
-                Touch_Tap(retriTouchX, retriTouchY);
+                // retri CD kira-kira 30s+; kalau tap pertama meleset (button geser/posisi,
+                // target sembuh lagi, dll) kita coba ulang tiap retriRetryMs selama target
+                // masih hidup & eligible, sampai target mati.
+                Touch_Tap((int) retriTouchX, (int) retriTouchY, retriHoldMs);
                 lastRetriTriggered[i] = true;
+                lastRetriTapMs[i] = now;
+            } else if (now - lastRetriTapMs[i] >= (uint64_t) retriRetryMs) {
+                lastRetriTriggered[i] = false;   // siap retry di frame berikutnya
             }
         } else {
             lastRetriTriggered[i] = false;
@@ -972,11 +993,11 @@ void Layout_tick_UI() {
 
     // ===== MINIMIZED: cuma pill kecil buat restore =====
     if (g_menuMinimized) {
-        ImGui::SetNextWindowPos(ImVec2(abs_ScreenX / 2.0f - 70, 0), ImGuiCond_Always);
+        ImGui::SetNextWindowPos(ImVec2(abs_ScreenX / 2.0f - 95, 0), ImGuiCond_Always);
         ImGuiWindowFlags pf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
                               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings;
         ImGui::Begin(oxorany("##minpill"), nullptr, pf);
-        if (ImGui::Button(oxorany("⚡ PANXCZ"), ImVec2(140, 38))) {
+        if (ImGui::Button(oxorany("⚡ PANXCZ ▢"), ImVec2(190, 46))) {
             g_menuMinimized = false;
         }
         // overlay tetap jalan walau menu di-minimize (draw sebelum End supaya g_window valid)
@@ -1000,20 +1021,22 @@ void Layout_tick_UI() {
     // header
     float w = ImGui::GetContentRegionAvail().x;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.588f, 0.784f, 0.16f));
-    ImGui::BeginChild("##hdr", ImVec2(w, 46), true, ImGuiWindowFlags_NoScrollbar);
-    ImGui::SetCursorPos(ImVec2(14, 11));
+    ImGui::BeginChild("##hdr", ImVec2(w, 50), true, ImGuiWindowFlags_NoScrollbar);
+    ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v0.2");
-    ImGui::SetCursorPos(ImVec2(w - 170, 13));
+    ImGui::TextDisabled("MLBB v0.3");
+    ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "中文");
-    // tombol minimize (-) & exit (x)
-    ImGui::SetCursorPos(ImVec2(w - 60, 9));
-    if (ImGui::SmallButton(oxorany("-"))) {
+    // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
+    float bx = w - 118.0f;
+    ImGui::SetCursorPos(ImVec2(bx, 6));
+    if (ImGui::Button(oxorany("——"), ImVec2(52, 38))) {
         g_menuMinimized = true;
     }
-    ImGui::SameLine();
-    if (ImGui::SmallButton(oxorany("x"))) {
+    bx += 60.0f;
+    ImGui::SetCursorPos(ImVec2(bx, 6));
+    if (ImGui::Button(oxorany("✕"), ImVec2(52, 38))) {
         main_thread_flag = false;
     }
     ImGui::EndChild();
@@ -1052,6 +1075,31 @@ void Layout_tick_UI() {
             ImGui::TextDisabled(TR("Retri button position (screen coords)", "惩戒按钮位置 (屏幕坐标)"));
             ImGui::SliderFloat("X", &retriTouchX, 0.0f, 3000.0f, "%.0f");
             ImGui::SliderFloat("Y", &retriTouchY, 0.0f, 1500.0f, "%.0f");
+
+            SectionHeader(TR("Damage & Timing", "伤害与时序"));
+            if (Oneself) {
+                int lvl = Read<int>(Oneself + 0x190);
+                int kw = Read<int>(Oneself + 0xa20);
+                int dmg = CalculateRetriDamage(lvl, kw) + retriDmgBonus;
+                if (dmg < 0) dmg = 0;
+                ImGui::TextColored(ImColor(255, 200, 60, 255),
+                    TR("Retri dmg now: %d  (Lv %d | %d jungle kills)", "当前惩戒伤害: %d (等级 %d | 击杀 %d)"), dmg, lvl, kw);
+                int ready = 0;
+                for (int t = 0; t < MonsterCount; t++) {
+                    if (!monster[t].isValid || monster[t].isDead) continue;
+                    if (monster[t].distance > retriMaxDist) continue;
+                    if (monster[t].health <= dmg) ready++;
+                }
+                ImGui::TextColored(ImColor(120, 255, 160, 255),
+                    TR("Monster killable right now: %d", "当前可击杀野怪: %d"), ready);
+            } else {
+                ImGui::TextDisabled(TR("(no monster data yet - enter a match)", "(暂无野怪数据 - 请进入对局)"));
+            }
+            ImGui::SliderInt(TR("Dmg Bonus", "伤害修正"), &retriDmgBonus, -500, 1000, "%d");
+            ImGui::SliderInt(TR("Hold ms", "按住时长(ms)"), &retriHoldMs, 30, 300, "%d ms");
+            ImGui::SliderInt(TR("Retry every", "重试间隔"), &retriRetryMs, 500, 6000, "%d ms");
+            ImGui::SliderFloat(TR("Max Distance", "最大距离"), &retriMaxDist, 1.0f, 20.0f, "%.1f");
+            ImGui::TextDisabled(TR("Auto retries every few sec while target is killable.", "目标可击杀时会自动每几秒重试。"));
 
             SectionHeader(TR("Target", "目标"));
             ImGui::Checkbox(TR("Buff Red", "红Buff"), &AutoRetributionRed);
@@ -1108,6 +1156,9 @@ void Layout_tick_UI() {
             if (ImGui::Button(TR(" Unload (exit) ", " 卸载并退出 "), ImVec2(-1, 40))) {
                 exit(0);
             }
+            ImGui::Spacing();
+            ImGui::TextDisabled(TR("Volume − = minimize menu | Volume + = expand", "音量- = 最小化菜单 | 音量+ = 展开"));
+            ImGui::TextDisabled(TR("ESP/minimap tetap jalan saat menu di-minimize.", "菜单最小化时 ESP/小地图仍然运行。"));
             ImGui::EndTabItem();
         }
 
@@ -1121,8 +1172,66 @@ void Layout_tick_UI() {
     ImGui::End();
 }
 
+// Volume − -> minimize menu, Volume + -> expand (tanpa grab, sistem tetap normal)
+static void *VolumeKeyWatcher(void *arg) {
+    (void) arg;
+    int fds[32];
+    int n = 0;
+    for (int dev = 0; dev < 64 && n < 32; dev++) {
+        char temp[64];
+        snprintf(temp, sizeof(temp), "/dev/input/event%d", dev);
+        int fd = open(temp, O_RDONLY | O_NONBLOCK);
+        if (fd < 0) continue;
+        uint8_t types[(EV_MAX / 8) + 1] = {0};
+        if (ioctl(fd, EVIOCGBIT(0, sizeof(types)), types) < 0 ||
+            !(types[EV_KEY / 8] & (1 << (EV_KEY % 8)))) {
+            close(fd);
+            continue;
+        }
+        uint8_t keys[(KEY_MAX / 8) + 1] = {0};
+        if (ioctl(fd, EVIOCGBIT(EV_KEY, sizeof(keys)), keys) < 0) {
+            close(fd);
+            continue;
+        }
+        bool hasVol = (keys[KEY_VOLUMEDOWN / 8] & (1 << (KEY_VOLUMEDOWN % 8))) ||
+                      (keys[KEY_VOLUMEUP / 8] & (1 << (KEY_VOLUMEUP % 8)));
+        if (!hasVol) {
+            close(fd);
+            continue;
+        }
+        fds[n++] = fd;
+    }
+    if (n == 0) return nullptr;
+    while (main_thread_flag) {
+        fd_set rfds;
+        FD_ZERO(&rfds);
+        int maxfd = 0;
+        for (int i = 0; i < n; i++) {
+            FD_SET(fds[i], &rfds);
+            if (fds[i] > maxfd) maxfd = fds[i];
+        }
+        struct timeval tv = {1, 0};
+        if (select(maxfd + 1, &rfds, nullptr, nullptr, &tv) <= 0) continue;
+        for (int i = 0; i < n; i++) {
+            if (!FD_ISSET(fds[i], &rfds)) continue;
+            struct input_event ev[32];
+            ssize_t r;
+            while ((r = read(fds[i], ev, sizeof(ev))) > 0) {
+                int cnt = (int) (r / (ssize_t) sizeof(struct input_event));
+                for (int j = 0; j < cnt; j++) {
+                    if (ev[j].type != EV_KEY || ev[j].value != 1) continue;
+                    if (ev[j].code == KEY_VOLUMEDOWN) g_menuMinimized = true;
+                    else if (ev[j].code == KEY_VOLUMEUP) g_menuMinimized = false;
+                }
+            }
+        }
+    }
+    for (int i = 0; i < n; i++) close(fds[i]);
+    return nullptr;
+}
+
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v0.2\n");
+    printf("[+] PANXCZ MLBB v0.3\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -1154,6 +1263,11 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         return -1;
     }
     Touch_Init(displayInfo.width, displayInfo.height, displayInfo.orientation, false);
+    pthread_t volTh;
+    if (pthread_create(&volTh, nullptr, VolumeKeyWatcher, nullptr) == 0) {
+        pthread_detach(volTh);
+        printf("[+] Volume key control active (Vol- minimize / Vol+ expand)\n");
+    }
     ApplyTheme();
     while (main_thread_flag) {
         MonsterRetribution();

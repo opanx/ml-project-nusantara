@@ -201,7 +201,7 @@ static void *TypeA(void *arg) {
                     continue;
                 }
             }
-            if (ie.code == SYN_REPORT) {
+            if (ie.type == EV_SYN && ie.code == SYN_REPORT) {
                 ImGuiIO &io = ImGui::GetIO();
                 if (Finger[i][latest].isDown) {
                     float x = Finger[i][latest].x, y = Finger[i][latest].y;
@@ -257,11 +257,16 @@ static void *TypeA(void *arg) {
                     io.MouseDown[0] = false;
                     //  LOGD("抬起");
                 }
-                if (!Touch_readOnly) {
-                    Upload();
-                }
                 continue;
             }
+        }
+        // Verbatim mirror: teruskan event asli apa adanya (ABS_MT_SLOT, TRACKING_ID,
+        // urutan & timing driver asli) ke uinput clone. Game terima stream identik dgn
+        // kondisi tanpa overlay -> gesture/flick MLBB (quick emote, slide chat) tetap
+        // natural & tanpa delay rebuild. Upload() hanya dipakai utk tap sintetik (retri).
+        if (!Touch_readOnly && nowfd > 0) {
+            ssize_t wrc = write(nowfd, inputEvent, (size_t) readSize);
+            (void) wrc;
         }
     }
     return nullptr;
@@ -338,6 +343,7 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
         ioctl(nowfd, UI_SET_EVBIT, EV_ABS);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_X);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_Y);
+        ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_SLOT);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_POSITION_X);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_POSITION_Y);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_TRACKING_ID);
@@ -389,6 +395,8 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
         ui_dev.absmax[ABS_Y] = screenY;
         ui_dev.absmin[ABS_MT_TRACKING_ID] = 0;
         ui_dev.absmax[ABS_MT_TRACKING_ID] = 65535;
+        ui_dev.absmin[ABS_MT_SLOT] = 0;
+        ui_dev.absmax[ABS_MT_SLOT] = 15;
         write(nowfd, &ui_dev, sizeof(ui_dev));
 
         if (ioctl(nowfd, UI_DEV_CREATE)) {

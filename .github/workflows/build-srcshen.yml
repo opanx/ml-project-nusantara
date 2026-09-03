@@ -52,14 +52,14 @@ jobs:
           name: panxcz-mlbb
           path: release/
 
-      - name: Create pre-release v0.2
+      - name: Create pre-release v0.3
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.2
-          name: "Panxcz cheat mlbb v0.2 pre release"
+          tag_name: v0.3
+          name: "Panxcz cheat mlbb v0.3 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v0.2 pre release
+            ## Panxcz cheat mlbb v0.3 pre release
 
             ### File
             | File | Type | Keterangan |
@@ -67,16 +67,20 @@ jobs:
             | `panxcz_mlbb` | ELF executable (arm64) | Cheat MLBB terbaru (ESP + Auto Retri + Minimap + Drone View) |
             | `dump_22.1.97.12061.cs` | Dump reference | Offsets & kelas untuk update berikutnya |
 
-            ### Fix v0.1 -> v0.2
-            - **Crash boot (Aborted 134 / Pointer tag truncated)** - pointer hasil baca dari memori game sekarang di-untag (mask top byte) sebelum dikirim ke syscall process_vm - ROM AOSP 16 pakai tagged pointers
-            - **Bug write memory** - pvm 4-arg sekarang benar pakai SYS_process_vm_writev saat iswrite=true (dulu selalu readv - Drone View FOV write tidak pernah jalan)
-            - **Ukuran overlay** - native_window_screen_y sekarang pakai dimensi MIN (dulu MAX - surface lebih tinggi dari layar)
-            - **Minimap tidak sinkron** - math WorldToMinimap sekarang pakai bidang horizontal X/Z yang benar (dulu nyampur sumbu vertikal Y-up)
-            - **Kalibrasi minimap live** - slider Angle / X-Mult / Y-Mult / Off X / Off Y / Scale + Pos Y + Icon Size
-            - **Marker player sendiri (hijau)** di minimap - biar mudah verifikasi sinkronisasi
-            - **Tombol minimize (-)** - menu bisa di-collapse jadi pill kecil, overlay ESP tetap jalan
-            - **Tombol exit (x)** di header menu
-            - Init overlay memakai jalur yang terbukti boot (print tiap langkah, no prompt, guard null window)
+            ### Fix v0.2 -> v0.3
+            - **Touch passthrough di-rework jadi verbatim mirror** - event sentuh asli (ABS_MT_SLOT, TRACKING_ID, urutan & timing driver) diteruskan apa adanya ke game, bukan di-rebuild ulang. Gesture MLBB kayak quick emote & slide chat sekarang terdeteksi natural, latensi input turun drastis
+            - **uinput clone sekarang support ABS_MT_SLOT** biar multitouch & gesture tetap utuh saat mirror
+            - **Auto Retri lebih pintar** - kalau tap pertama meleset (button CD / posisi bergeser / target sembuh), auto retry tiap interval sampai target mati
+            - **Damage retri bisa dikoreksi** - slider Dmg Bonus kalau angka formula beda sama damage asli di versi game lo
+            - **Info live di tab Auto Retri** - tampil damage retri sekarang (Lv + jungle kills), jumlah monster yang bisa langsung dibunuh, Hold ms, Retry interval, Max Distance
+            - **Tombol minimize/exit lebih gede** (52x38) biar gampang disentuh
+            - **Volume − = minimize menu | Volume + = expand** (tanpa ganggu volume sistem; ESP/minimap tetap jalan saat menu collapsed)
+
+            ### Fix v0.1 -> v0.2 (sebelumnya)
+            - Crash boot (Aborted 134 / Pointer tag truncated) - pointer di-untag sebelum process_vm syscall
+            - Bug write memory pvm 4-arg (sekarang benar SYS_process_vm_writev)
+            - Ukuran overlay & math minimap (bidang X/Z benar) + kalibrasi live + marker player sendiri
+            - Init overlay jalur yang terbukti boot
 
             ### Offset Source
             - Di-update berdasarkan dump resmi **MLBB 22.1.97.12061**
