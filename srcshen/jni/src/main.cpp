@@ -51,6 +51,7 @@
 using namespace Memory;
 
 bool main_thread_flag = true;
+bool g_menuMinimized = false;   // true = menu di-collapse jadi pill kecil
 int abs_ScreenX = 0;
 int abs_ScreenY = 0;
 bool drawMAddress;
@@ -794,28 +795,37 @@ void RoomInfoList() {
 
 int MinimapSize = 342;
 int MinimapPos = 76;
+int MinimapPosY = 0;
 bool MinimapIcon = true;
 bool HideLine = false;
 
 float g_MinimapScale = 74.11f;
+float g_MapAngle = 314.60f;   // derajat rotasi map (bisa dikalibrasi live)
 float g_Res0_MultX = 1.0f;
 float g_Res0_MultY = 1.0f;
 float g_Res1_OffsetX = 0.0f;
 float g_Res1_OffsetY = 0.0f;
 int g_ICSize = 38;
 
+// Minimap harus pakai bidang horizontal (X & Z dunia), BUKAN sumbu vertikal (Y-up).
+// Sebelumnya HeroPosition.Z itu isinya worldY (atas/bawah) -> ikon melompat-lompat
+// dan ga sinkron sama gerakan player.
 Vector2 WorldToMinimap(Vector3 HeroPosition) {
-    float angle = 314.60f * 0.017453292519943295f;
+    float angle = g_MapAngle * 0.017453292519943295f;
     float angleCos = std::cos(angle);
     float angleSin = std::sin(angle);
 
+    // HeroPosition.X = worldX, HeroPosition.Y = worldZ (horizontal)
+    float worldX = HeroPosition.X;
+    float worldZ = HeroPosition.Y;
+
     Vector2 Res0;
-    Res0.X = ((angleCos * HeroPosition.X - angleSin * (-HeroPosition.Z)) / g_MinimapScale) * g_Res0_MultX;
-    Res0.Y = ((angleSin * HeroPosition.Y + angleCos * (-HeroPosition.Z)) / g_MinimapScale) * g_Res0_MultY;
+    Res0.X = ((angleCos * worldX - angleSin * (-worldZ)) / g_MinimapScale) * g_Res0_MultX;
+    Res0.Y = ((angleSin * worldX + angleCos * (-worldZ)) / g_MinimapScale) * g_Res0_MultY;
 
     Vector2 Res1;
     Res1.X = (Res0.X * MinimapSize) + MinimapPos + MinimapSize / 2.0f + g_Res1_OffsetX;
-    Res1.Y = (Res0.Y * MinimapSize) + MinimapSize / 2.0f + g_Res1_OffsetY;
+    Res1.Y = (Res0.Y * MinimapSize) + MinimapPosY + MinimapSize / 2.0f + g_Res1_OffsetY;
 
     return Res1;
 }
@@ -837,6 +847,28 @@ void DrawMinimapESP(ImDrawList* draw) {
     size_t m_bSameCampType   = 0x2a9;
     size_t m_bDeath          = 0xc5;
     size_t m_vCachePosition  = 0x28c;
+
+    // marker player sendiri (hijau) biar kelihatan sinkron sama gerakan
+    {
+        long selfp = getPtr641(a32 + 0x48); // m_LocalPlayerShow
+        if (selfp) {
+            Vector3A me{};
+            vm_readv(selfp + m_vCachePosition, &me, sizeof(me));
+            if (me.X != 0 || me.Y != 0 || me.Z != 0) {
+                Vector2 myPos = WorldToMinimap({ me.X, me.Y, me.Z });
+                draw->AddTriangleFilled(
+                    ImVec2(myPos.X, myPos.Y - 14),
+                    ImVec2(myPos.X - 10, myPos.Y + 10),
+                    ImVec2(myPos.X + 10, myPos.Y + 10),
+                    IM_COL32(0, 255, 120, 255));
+                draw->AddTriangle(
+                    ImVec2(myPos.X, myPos.Y - 14),
+                    ImVec2(myPos.X - 10, myPos.Y + 10),
+                    ImVec2(myPos.X + 10, myPos.Y + 10),
+                    IM_COL32(0, 0, 0, 220), 1.5f);
+            }
+        }
+    }
 
     long showList = getPtr641(a32 + m_ShowPlayers);
     if (!showList) return;
@@ -937,6 +969,24 @@ void SectionHeader(const char* label) {
 
 void Layout_tick_UI() {
     ImGuiIO &io = ImGui::GetIO();
+
+    // ===== MINIMIZED: cuma pill kecil buat restore =====
+    if (g_menuMinimized) {
+        ImGui::SetNextWindowPos(ImVec2(abs_ScreenX / 2.0f - 70, 0), ImGuiCond_Always);
+        ImGuiWindowFlags pf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
+                              ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings;
+        ImGui::Begin(oxorany("##minpill"), nullptr, pf);
+        if (ImGui::Button(oxorany("⚡ PANXCZ"), ImVec2(140, 38))) {
+            g_menuMinimized = false;
+        }
+        // overlay tetap jalan walau menu di-minimize (draw sebelum End supaya g_window valid)
+        if (MinimapIcon) DrawMinimapESP(ImGui::GetForegroundDrawList());
+        DrawMonster(ImGui::GetForegroundDrawList());
+        g_window = ImGui::GetCurrentWindow();
+        ImGui::End();
+        return;
+    }
+
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar;
 
     // window 16:9 proporsional layar
@@ -954,9 +1004,18 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 11));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v0.1");
-    ImGui::SetCursorPos(ImVec2(w - 110, 13));
+    ImGui::TextDisabled("MLBB v0.2");
+    ImGui::SetCursorPos(ImVec2(w - 170, 13));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "中文");
+    // tombol minimize (-) & exit (x)
+    ImGui::SetCursorPos(ImVec2(w - 60, 9));
+    if (ImGui::SmallButton(oxorany("-"))) {
+        g_menuMinimized = true;
+    }
+    ImGui::SameLine();
+    if (ImGui::SmallButton(oxorany("x"))) {
+        main_thread_flag = false;
+    }
     ImGui::EndChild();
     ImGui::PopStyleColor();
     ImGui::Spacing();
@@ -1011,14 +1070,17 @@ void Layout_tick_UI() {
             ImGui::Checkbox(TR("Hide Frame", "隐藏边框"), &HideLine);
             ImGui::SliderInt(TR("Size", "大小"), &MinimapSize, 100, 600);
             ImGui::SliderInt(TR("Pos X", "位置X"), &MinimapPos, 0, 800);
+            ImGui::SliderInt(TR("Pos Y", "位置Y"), &MinimapPosY, 0, 800);
             ImGui::SliderInt(TR("Icon Size", "图标大小"), &g_ICSize, 1, 100);
 
             SectionHeader(TR("Calibration", "校准"));
+            ImGui::SliderFloat(TR("Angle", "角度"), &g_MapAngle, 0.0f, 360.0f);
             ImGui::SliderFloat("X Mult", &g_Res0_MultX, 0.1f, 3.0f);
             ImGui::SliderFloat("Y Mult", &g_Res0_MultY, 0.1f, 3.0f);
             ImGui::SliderFloat("Off X", &g_Res1_OffsetX, -200.0f, 200.0f);
             ImGui::SliderFloat("Off Y", &g_Res1_OffsetY, -200.0f, 200.0f);
             ImGui::SliderFloat(TR("Scale", "缩放"), &g_MinimapScale, 10.0f, 150.0f);
+            ImGui::TextDisabled(TR("Angle = map rotation. Adjust so enemy dots align with in-game minimap.", "Angle = rotasi peta. Atur agar titik musuh sejajar dgn minimap asli."));
             ImGui::EndTabItem();
         }
 
@@ -1060,7 +1122,7 @@ void Layout_tick_UI() {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v0.1\n");
+    printf("[+] PANXCZ MLBB v0.2\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -1085,7 +1147,9 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     ::abs_ScreenX = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
     ::abs_ScreenY = (displayInfo.height < displayInfo.width ? displayInfo.height : displayInfo.width);
     ::native_window_screen_x = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
-    ::native_window_screen_y = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
+    // NOTE: y harus dimensi MIN, bukan max (dulu salah -> surface lebih tinggi dari layar)
+    ::native_window_screen_y = (displayInfo.height < displayInfo.width ? displayInfo.height : displayInfo.width);
+    printf("[+] Screen: %dx%d\n", abs_ScreenX, abs_ScreenY);
     if (!initGUI_draw(native_window_screen_x, native_window_screen_y, true)) {
         return -1;
     }

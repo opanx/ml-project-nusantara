@@ -38,6 +38,13 @@ typedef char UTF8;
 int pid, getPID(char bm[64]), count, ipid, oid, scwz, location;
 //float px,py;
 float angle, camera, r_x, r_y, r_w;
+
+// Strip MTE / top-byte tag from a pointer coming out of game memory.
+// Android 14+/16 can store tagged pointers; the kernel (and bionic checks)
+// abort with "Pointer tag ... was truncated" if we pass them raw to a syscall.
+static inline void *untag_ptr(void *p) {
+    return reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(p) & 0x00FFFFFFFFFFFFFFULL);
+}
 float matrix[16] = { 0 };
 
 uintptr_t get_base_address() {
@@ -142,7 +149,7 @@ int pvm(uintptr_t address, void* buffer,int size) {
 
     local[0].iov_base = (void*)buffer;
     local[0].iov_len = size;
-    remote[0].iov_base = (void*)address;
+    remote[0].iov_base = untag_ptr(reinterpret_cast<void *>(address));
     remote[0].iov_len = size;
     ssize_t bytes = syscall(SYS_process_vm_readv,pid, local, 1, remote, 1, 0);
     return bytes == size;
@@ -154,7 +161,7 @@ bool pvm(void *address, void *buffer, size_t size, bool iswrite)
 	struct iovec remote[1];
 	local[0].iov_base = buffer;
 	local[0].iov_len = size;
-	remote[0].iov_base = address;
+	remote[0].iov_base = untag_ptr(address);
 	remote[0].iov_len = size;
 	if (pid < 0)
 	{
