@@ -3,6 +3,7 @@
 #include <linux/uinput.h>
 #include <vector>
 #include <functional>
+#include <algorithm>
 #include <cstdio>
 #include <unistd.h>
 #include <cstdlib>
@@ -118,13 +119,13 @@ uintptr_t FindBattleManager() {
         return 0;
     }
 
-    printf("[+] Scanning for BattleManager (all rw regions)...\n");
+    printf("[+] Scanning for BattleManager (background, rw regions)...\n");
     uintptr_t result = 0;
     int regionsScanned = 0;
     int candidates = 0;
 
     // Collect all rw regions first
-    struct Region { uintptr_t start; uintptr_t end; };
+    struct Region { uintptr_t start; uintptr_t end; bool anonymous; };
     std::vector<Region> rwRegions;
 
     while (fgets(line, sizeof(line), f)) {
@@ -145,18 +146,26 @@ uintptr_t FindBattleManager() {
             continue;
         // Skip small regions (< 64KB)
         if (end - start < 0x10000) continue;
-        // Prioritize: anonymous > libcsharp.so > liblogic.so > others
-        rwRegions.push_back({start, end});
+        // Prioritize: anonymous heap (IL2CPP static) > others
+        bool anonymous = (name[0] == '\0' || strstr(name, "[anon]") || strstr(name, "[heap]"));
+        rwRegions.push_back({start, end, anonymous});
     }
     fclose(f);
 
-    printf("[+] Found %zu rw regions to scan\n", rwRegions.size());
+    // anonymous dulu (paling mungkin), sisanya belakangan
+    std::stable_sort(rwRegions.begin(), rwRegions.end(),
+        [](const Region &a, const Region &b) { return a.anonymous && !b.anonymous; });
+
+    printf("[+] Found %zu rw regions to scan (anonymous first)\n", rwRegions.size());
 
     for (auto &region : rwRegions) {
+        if (result) break;
         regionsScanned++;
         uintptr_t regionSize = region.end - region.start;
+        // Batasi scan per region (anon heap bisa besar sekali) biar cepet
+        if (regionSize > 0x4000000) regionSize = 0x4000000; // max 64MB per region
 
-        for (uintptr_t addr = region.start; addr < region.end - 0x100; addr += 8) {
+        for (uintptr_t addr = region.start; addr < region.start + regionSize - 0x100; addr += 8) {
             uintptr_t ptr = 0;
             if (!pvm((void*)addr, &ptr, 8, false))
                 continue;
@@ -957,7 +966,7 @@ void Layout_tick_UI() {
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_AlwaysAutoResize;
 ImGui::SetNextWindowSizeConstraints(ImVec2(800, 0), ImVec2(820, FLT_MAX));
 
-ImGui::Begin(oxorany("         Panxcz v1.10 - MLBB Tool"), nullptr, window_flags);
+ImGui::Begin(oxorany("         Panxcz v2.0 - MLBB Tool"), nullptr, window_flags);
 
 
     if (ImGui::BeginTabBar("####")) {
@@ -1109,7 +1118,7 @@ ImGui::Begin(oxorany("         Panxcz v1.10 - MLBB Tool"), nullptr, window_flags
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] Panxcz v1.10 - MLBB Tool\n");
+    printf("[+] Panxcz v2.0 - MLBB Tool (NUSANTARA)\n");
     printf("[+] Finding game process...\n");
     // Try multiple process names (MLBB varies per region/version)
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
@@ -1165,36 +1174,62 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     ImGui::GetStyle().WindowRounding = 25.0f;
     printf("[+] Starting main loop...\n");
     
-    // === Find BattleManager ===
-    {
-        // Chain baru (dump 22.1.97.12061): slot -> static_fields(+0xa8) -> Instance(deref)
-        long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER);
-        long a2 = a1 ? getPtr641(a1 + OFF_BM_STATIC_FIELDS) : 0;
-        long bm = a2 ? getPtr641(a2) : 0;
-        bool bmValid = false;
-        if (bm > 0x10000 && bm < 0x7FFFFFFFFFFF) {
-            long sp = getPtr641(bm + OFF_SHOW_PLAYERS);
-            if (sp > 0x10000 && sp < 0x7FFFFFFFFFFF) {
-                uint32_t check = Read<uint>(sp + 0x18);
-                if (check > 0 && check <= 20) {
-                    bmValid = true;
-                    g_BattleManager = bm;
-                    printf("[+] BattleManager from offset: 0x%lx (players=%u)\n", bm, check);
+    printf("[+] Starting main loop (menu langsung muncul, BM di-scan di background)...\n");
+    
+    // ===== Background thread: cari BattleManager (offset chain dulu, kalau gagal scan) =====
+    // Menu ImGui TIDAK pernah diblokir oleh scan — fitur aktif begitu BM ketemu.
+    static pthread_t bmThread;
+    pthread_create(&bmThread, nullptr, [](void *) -> void * {
+        int retry = 0;
+        while (main_thread_flag) {
+            if (!g_BattleManager) {
+                // 1) coba offset chain dulu (cepat)
+                long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER);
+                long a2 = a1 ? getPtr641(a1 + OFF_BM_STATIC_FIELDS) : 0;
+                long bm = a2 ? getPtr641(a2) : 0;
+                bool ok = false;
+                if (bm > 0x10000 && bm < 0x7FFFFFFFFFFF) {
+                    long sp = getPtr641(bm + OFF_SHOW_PLAYERS);
+                    if (sp > 0x10000 && sp < 0x7FFFFFFFFFFF) {
+                        uint32_t check = Read<uint>(sp + 0x18);
+                        if (check > 0 && check <= 20) {
+                            g_BattleManager = bm;
+                            ok = true;
+                            printf("[+] BattleManager from offset: 0x%lx (players=%u)\n", bm, check);
+                        }
+                    }
                 }
-            }
-        }
-        if (!bmValid) {
-            printf("[!] Hardcoded offset 0x%x wrong, scanning memory...\n", OFF_BATTLE_MANAGER);
-            long scanned = FindBattleManager();
-            if (scanned) {
-                g_BattleManager = scanned;
-                printf("[+] BattleManager found by scanner: 0x%lx\n", g_BattleManager);
+                // 2) kalau belum, scan memory (lambat, tapi di background — menu tetep jalan)
+                if (!ok) {
+                    if (retry % 4 == 0) {
+                        printf("[!] Offset 0x%x belum valid, scan memory (background)...\n", OFF_BATTLE_MANAGER);
+                        long scanned = FindBattleManager();
+                        if (scanned) {
+                            g_BattleManager = scanned;
+                            printf("[+] BattleManager found by scanner: 0x%lx\n", g_BattleManager);
+                        }
+                    }
+                    retry++;
+                    usleep(500000); // coba ulang tiap 0.5s
+                } else {
+                    usleep(1000000);
+                }
             } else {
-                printf("[-] BattleManager NOT FOUND! Features disabled.\n");
-                printf("[-] Game may not be in a match.\n");
+                // Re-validate periodically — kalau invalid (ganti match), reset & cari lagi
+                static int recheck = 0;
+                if ((++recheck % 20) == 0) {
+                    long sp = getPtr641(g_BattleManager + OFF_SHOW_PLAYERS);
+                    if (sp < 0x10000 || sp > 0x7FFFFFFFFFFF) {
+                        printf("[!] BattleManager invalid, reset & re-scan...\n");
+                        g_BattleManager = 0;
+                    }
+                }
+                usleep(500000);
             }
         }
-    }
+        return nullptr;
+    }, nullptr);
+    pthread_detach(bmThread);
     
     static int debugFrameCount = 0;
     while (main_thread_flag) {
@@ -1212,15 +1247,6 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
             retriTouchY = g_retriLogicalY;
             g_retriLogicalX = -1.0f;
             g_retriLogicalY = -1.0f;
-        }
-        // Re-validate BattleManager periodically
-        if (debugFrameCount % 600 == 0 && g_BattleManager) {
-            long sp = getPtr641(g_BattleManager + OFF_SHOW_PLAYERS);
-            if (sp < 0x10000 || sp > 0x7FFFFFFFFFFF) {
-                printf("[!] BattleManager invalid at frame %d, re-scanning...\n", debugFrameCount);
-                long scanned = FindBattleManager();
-                if (scanned) g_BattleManager = scanned;
-            }
         }
         MonsterRetribution();
         CheckAndTriggerRetribution();
