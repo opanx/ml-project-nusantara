@@ -25,3 +25,16 @@ extern int  g_retriNativeY;
 extern float g_retriLogicalX;
 extern float g_retriLogicalY;
 
+// Diagnostics touch (dibaca dari UI utk debug - kenapa tap ga nyampe)
+extern bool g_touchDebugLog;      // print detail tap ke console
+// 0 = gagal, 1 = ok (isi dari Touch_Init)
+extern int  g_touchInitOk;
+extern int  g_touchFdCount;        // jumlah device sentuh yg ke-grab
+// statistik inject: berapa batch/byte yg berhasil ditulis ke uinput
+extern long long g_touchMirrorWrites;
+extern long long g_touchMirrorBytes;
+extern long long g_touchTapWrites;
+extern long long g_touchTapBytes;
+extern int  g_touchLastErr;        // errno terakhir pas write gagal (0 = aman)
+extern char g_touchDevName[64];    // nama device sentuh asli yg di-grab
+

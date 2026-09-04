@@ -52,16 +52,23 @@ jobs:
           name: panxcz-mlbb
           path: release/
 
-      - name: Create pre-release v0.8
+      - name: Create pre-release v0.9
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.8
-          name: "Panxcz cheat mlbb v0.8 pre release"
+          tag_name: v0.9
+          name: "Panxcz cheat mlbb v0.9 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v0.8 pre release
+            ## Panxcz cheat mlbb v0.9 pre release
 
-            ### FITUR BARU — ROOM / PLAYER INFO + DEBUG
+            ### TOOL DEBUG TOUCH + AUTO-RETRI (biar langsung ketahuan gagalnya di mana)
+            - **Tombol "Test Tap"** di tab Auto Retri: tap 1x di titik retri yg dikalibrasi TANPA perlu nunggu monster. Kalau ini bikin game kepencet → injeksi jalan, masalahnya cuma di deteksi monster. Kalau ga kepencet → masalah di injeksi (errno tampil di layar).
+            - **Status Touch live** di tab Auto Retri: Touch OK/FAILED, nama device yg di-grab, jumlah tap-batch & mirror-batch yg berhasil ditulis ke uinput + errno kalau sistem nolak (mis. EACCES/EINVAL = masih ke-filter Android).
+            - **Verbose log**: tiap tap ada print `[TOUCH] tap DOWN/UP (x,y) fd bytes errno` + `[RETRI] auto-tap target#...` + baris `[DBG]` tiap ~1.5 detik (BM, players, monsters, camp) → tinggal paste log-nya ke sini buat fix lanjutan.
+            - **Room Info di-refresh otomatis tiap ~200ms** (sebelumnya cuma pas tab kebuka) → data player langsung muncul begitu BattleManager ada (loading screen / awal match), minimap & overlay juga kepanas duluan.
+            - Catatan jujur: data draft/pick (fase pick-ban) ada di class proto Room server yang nggak punya instance native terbaca — jadi Room Info muncul mulai **loading screen** (saat ShowPlayer/BM aktif), bukan pas masih layar pick. Ini batasan semua tool ELF tanpa hook tambahan.
+
+            ### FITUR BARU — ROOM / PLAYER INFO + DEBUG (v0.8)
             - **Tab Info & Debug**: daftar player live (Biru/sekutu & Merah/musuh) — setiap pemain nunjukin **Hero** (m_HeroName 0x8d0), **Battle Spell** (m_iSummonSkillId 0x95c → Retribution/Execute/Flicker dll), **Rank** (m_uiRankLevel 0x90c + defence 0x910), **Level**, **KDA** (0x9e0/0x9e8/0x9e4), **Gold** (0xa24), **Team name** (0x8f8), **jarak** dari lo, dan penanda `>>` buat diri sendiri. Pemisahan tim pakai `m_EntityCampType` (0xd0).
             - **Info Saya**: hero, level, KDA, posisi X/Y/Z sendiri.
             - **Debug overlay** (toggle, kiri atas): PID, libbase, alamat BattleManager, jumlah player per tim + monster, FPS, camp, status Safe Mode. Overlay ini juga tampil pas menu di-minimize.

@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <cmath>
+#include <cerrno>
+#include <cstring>
 #include <linux/input.h>
 #include <linux/uinput.h>
 
@@ -24,6 +26,17 @@ int  g_retriNativeX = -1;
 int  g_retriNativeY = -1;
 float g_retriLogicalX = -1.0f;
 float g_retriLogicalY = -1.0f;
+
+// Diagnostics touch (dibaca UI utk debug)
+bool g_touchDebugLog = true;
+int  g_touchInitOk = 0;
+int  g_touchFdCount = 0;
+long long g_touchMirrorWrites = 0;
+long long g_touchMirrorBytes = 0;
+long long g_touchTapWrites = 0;
+long long g_touchTapBytes = 0;
+int  g_touchLastErr = 0;
+char g_touchDevName[64] = "";
 
 
 static uint32_t orientation = 0;
@@ -82,7 +95,11 @@ static void SendTapDown(int nx, int ny) {
     ev[c++] = {EV_KEY, BTN_TOUCH, 1};
     ev[c++] = {EV_KEY, BTN_TOOL_FINGER, 1};
     ev[c++] = {EV_SYN, SYN_REPORT, 0};
-    (void)!write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    ssize_t wrc = write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    if (wrc > 0) { g_touchTapWrites++; g_touchTapBytes += wrc; }
+    else if (wrc < 0) g_touchLastErr = errno;
+    if (g_touchDebugLog)
+        printf("[TOUCH] tap DOWN (%d,%d) fd=%d bytes=%zd errno=%d\n", nx, ny, nowfd, wrc, errno);
     g_synDown = true;
 }
 
@@ -96,7 +113,9 @@ static void SendTapMove(int nx, int ny) {
     ev[c++] = {EV_ABS, ABS_X, nx};
     ev[c++] = {EV_ABS, ABS_Y, ny};
     ev[c++] = {EV_SYN, SYN_REPORT, 0};
-    (void)!write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    ssize_t wrc = write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    if (wrc > 0) { g_touchTapWrites++; g_touchTapBytes += wrc; }
+    else if (wrc < 0) g_touchLastErr = errno;
 }
 
 static void SendTapUp() {
@@ -112,7 +131,11 @@ static void SendTapUp() {
         ev[c++] = {EV_KEY, BTN_TOOL_FINGER, 0};
     }
     ev[c++] = {EV_SYN, SYN_REPORT, 0};
-    (void)!write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    ssize_t wrc = write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    if (wrc > 0) { g_touchTapWrites++; g_touchTapBytes += wrc; }
+    else if (wrc < 0) g_touchLastErr = errno;
+    if (g_touchDebugLog)
+        printf("[TOUCH] tap UP fd=%d bytes=%zd errno=%d\n", nowfd, wrc, errno);
     g_synDown = false;
 }
 
@@ -278,7 +301,8 @@ static void *TypeA(void *arg) {
         // natural. Tap sintetik (retri) injeksi lewat slot terpisah (SendTap*).
         if (!Touch_readOnly && nowfd > 0) {
             ssize_t wrc = write(nowfd, inputEvent, (size_t) readSize);
-            (void) wrc;
+            if (wrc > 0) { g_touchMirrorWrites++; g_touchMirrorBytes += wrc; }
+            else if (wrc < 0) g_touchLastErr = errno;
         }
     }
     return nullptr;
@@ -317,6 +341,11 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
             tmp1 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &absX[fdNum]);
             tmp2 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY[fdNum]);
             if (tmp1 == 0 && tmp2 == 0) {
+                if (fdNum == 0) {
+                    char nm[64] = "";
+                    if (ioctl(fd, EVIOCGNAME(sizeof(nm) - 1), nm) >= 0)
+                        strncpy(g_touchDevName, nm, sizeof(g_touchDevName) - 1);
+                }
                 origfd[fdNum] = fd;
                 if (!readOnly) {
                     ioctl(fd, EVIOCGRAB, GRAB);
@@ -485,6 +514,10 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
         ::scale_y = (float) screenY / h;    
     }
 
+    g_touchInitOk = 1;
+    g_touchFdCount = fdNum;
+    printf("[TOUCH] init OK: %d device grabbed ("%s"), uinput fd=%d, screen %dx%d\n",
+           fdNum, g_touchDevName[0] ? g_touchDevName : "?", nowfd, screenX, screenY);
     system("chmod 000 -R /proc/bus/input/*");
     return true;
 }

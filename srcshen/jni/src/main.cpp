@@ -92,6 +92,17 @@ extern float g_retriLogicalY;
 extern void Touch_TapNative(int x, int y, int holdMs);
 extern bool Touch_Busy();
 
+// diagnostics touch (dari TouchHelperA - buat debug kenapa tap ga nyampe)
+extern bool g_touchDebugLog;
+extern int  g_touchInitOk;
+extern int  g_touchFdCount;
+extern long long g_touchMirrorWrites;
+extern long long g_touchMirrorBytes;
+extern long long g_touchTapWrites;
+extern long long g_touchTapBytes;
+extern int  g_touchLastErr;
+extern char g_touchDevName[64];
+
 // i18n: EN / 中文
 #define TR(en, cn) (langEN ? (en) : (cn))
 
@@ -889,12 +900,29 @@ int CalculateRetriDamage(int Level) {
 }
 
 static void DoRetriTap(int i, uint64_t now) {
-    if (g_retriNativeX >= 0 && g_retriNativeY >= 0)
+    printf("[RETRI] auto-tap target#%d dist=%.0f hp=%d/%d -> ",
+           i, monster[i].distance, monster[i].health, monster[i].maxHP);
+    if (g_retriNativeX >= 0 && g_retriNativeY >= 0) {
+        printf("native(%d,%d)\n", g_retriNativeX, g_retriNativeY);
         Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
-    else
+    } else {
+        printf("logical(%.0f,%.0f)\n", retriTouchX, retriTouchY);
         Touch_Tap((int) retriTouchX, (int) retriTouchY, retriHoldMs);
+    }
     lastRetriTriggered[i] = true;
     lastRetriTapMs[i] = now;
+}
+
+// tombol Test Tap: verifikasi injeksi sentuhan tanpa perlu nunggu monster
+static void ManualTestTap() {
+    printf("[RETRI] manual test tap\n");
+    if (g_retriNativeX >= 0 && g_retriNativeY >= 0) {
+        printf("[RETRI] -> calibrated native (%d,%d)\n", g_retriNativeX, g_retriNativeY);
+        Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
+    } else {
+        printf("[RETRI] -> logical (%.0f,%.0f)\n", retriTouchX, retriTouchY);
+        Touch_Tap((int) retriTouchX, (int) retriTouchY, retriHoldMs);
+    }
 }
 
 static bool RetriEligible(int i, int retriDmg) {
@@ -1208,7 +1236,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v0.8");
+    ImGui::TextDisabled("MLBB v0.9");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1286,6 +1314,23 @@ void Layout_tick_UI() {
                 }
             }
             ImGui::TextDisabled(TR("Lingkaran putih + cross = posisi tombol retri. Pindahkan via X/Y atau pakai Set Dot.", "Lingkaran putih + cross = posisi tombol retri. Pindahkan via X/Y atau pakai Set Dot."));
+
+            if (ImGui::Button(TR(" Test Tap (cek sentuhan jalan)", " Test Tap (cek sentuhan jalan)"), ImVec2(-1, 36))) {
+                ManualTestTap();
+            }
+            // status touch real-time: biar langsung kelihatan inject-nya jalan / error apa
+            const char *st = !g_touchInitOk ? "FAILED" : (g_touchFdCount > 0 ? "OK" : "NO DEVICE");
+            ImGui::TextColored(g_touchInitOk && g_touchFdCount > 0 ? ImColor(120, 255, 160, 255) : ImColor(255, 120, 120, 255),
+                "Touch: %s | dev: %s (%d)", st, g_touchDevName[0] ? g_touchDevName : "?", g_touchFdCount);
+            if (g_touchLastErr) {
+                ImGui::TextColored(ImColor(255, 180, 60, 255),
+                    TR("Last write error: errno %d - sentuhan ditolak sistem!", "Error write terakhir: errno %d - sentuhan ditolak sistem!"), g_touchLastErr);
+            } else {
+                ImGui::TextDisabled("Inject: %lld tap-batch (%lld B) | mirror %lld batch (%lld B)",
+                                    (long long) g_touchTapWrites, (long long) g_touchTapBytes,
+                                    (long long) g_touchMirrorWrites, (long long) g_touchMirrorBytes);
+            }
+            ImGui::Checkbox(TR("Verbose touch log (console)", "Log touch detail (console)"), &g_touchDebugLog);
 
             SectionHeader(TR("Damage & Timing", "Damage & Timing"));
             if (Oneself) {
@@ -1582,7 +1627,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v0.8\n");
+    printf("[+] PANXCZ MLBB v0.9\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -1613,7 +1658,8 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     if (!initGUI_draw(native_window_screen_x, native_window_screen_y, true)) {
         return -1;
     }
-    Touch_Init(displayInfo.width, displayInfo.height, displayInfo.orientation, false);
+    g_touchInitOk = Touch_Init(displayInfo.width, displayInfo.height, displayInfo.orientation, false) ? 1 : 0;
+    if (!g_touchInitOk) printf("[-] Touch_Init FAILED - auto retri & mirror touch tidak aktif!\n");
     LoadCfg();   // muat kalibrasi & pengaturan terakhir (biar minimap/dot ga reset)
     pthread_t volTh;
     if (pthread_create(&volTh, nullptr, VolumeKeyWatcher, nullptr) == 0) {
@@ -1622,11 +1668,22 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     }
     ApplyTheme();
     int saveTick = 0;
+    int dbgTick = 0;
+    int roomTick = 0;
     while (main_thread_flag) {
         if ((++saveTick % 1500) == 0) SaveCfg();   // autosave tiap ~1.5 detik
         MonsterRetribution();
         CheckAndTriggerRetribution();
         ApplyDroneView();
+        // refresh Room/Player info berkala (~200ms) biar langsung muncul begitu
+        // BattleManager ada (loading screen / awal match), ga perlu buka tab dulu
+        if ((++roomTick % 200) == 0) RefreshRoomInfo();
+        if (g_touchDebugLog && (++dbgTick % 1500) == 0)
+            printf("[DBG] touch ok=%d fd=%d dev=\"%s\" tap=%lldB mirror=%lldB err=%d | BM=0x%llx players B%d R%d monsters=%d retri=%d camp=%d\n",
+                   g_touchInitOk, g_touchFdCount, g_touchDevName[0] ? g_touchDevName : "?",
+                   (long long) g_touchTapBytes, (long long) g_touchMirrorBytes, g_touchLastErr,
+                   (unsigned long long) g_roomBM, g_roomBlueN, g_roomRedN, MonsterCount,
+                   autoRetribution ? 1 : 0, g_roomMyCamp);
         // hasil kalibrasi 1-tap: gerakkan dot marker ke posisi logical yang sama
         if (g_retriLogicalX >= 0.0f) {
             retriTouchX = g_retriLogicalX;
