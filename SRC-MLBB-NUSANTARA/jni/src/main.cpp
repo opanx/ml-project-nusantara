@@ -210,11 +210,12 @@ uintptr_t FindBattleManager() {
 
             candidates++;
 
-            // STRICT VALIDATION: MLBB has 5v5 = 10 players in match
-            // Skip if count < 5 or count > 10 (not a valid match)
-            if (count < 5 || count > 10) {
+            // VALIDATION: count 1-20 (loading/match/brawl/vsAI semua beda jumlah).
+            // JANGAN ketat 5-10 — di loading screen ShowPlayers bisa baru 4, dan itu
+            // BM yang valid (log srcshen di device: FOUND Players=4).
+            if (count < 1 || count > 20) {
                 if (candidates <= 3)
-                    printf("[-] Candidate %d @ 0x%lx: Players=%u (skipped, need 5-10)\n", candidates, ptr, count);
+                    printf("[-] Candidate %d @ 0x%lx: Players=%u (skipped, count 1-20)\n", candidates, ptr, count);
                 continue;
             }
 
@@ -1183,7 +1184,7 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         int retry = 0;
         while (main_thread_flag) {
             if (!g_BattleManager) {
-                // 1) coba offset chain dulu (cepat)
+                // 1) coba offset chain dulu (cepat). Debug tiap level biar jelas gagal di mana.
                 long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER);
                 long a2 = a1 ? getPtr641(a1 + OFF_BM_STATIC_FIELDS) : 0;
                 long bm = a2 ? getPtr641(a2) : 0;
@@ -1192,12 +1193,19 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
                     long sp = getPtr641(bm + OFF_SHOW_PLAYERS);
                     if (sp > 0x10000 && sp < 0x7FFFFFFFFFFF) {
                         uint32_t check = Read<uint>(sp + 0x18);
-                        if (check > 0 && check <= 20) {
+                        if (check <= 20) {   // count boleh 0 (belum match) — BM tetap valid
                             g_BattleManager = bm;
                             ok = true;
                             printf("[+] BattleManager from offset: 0x%lx (players=%u)\n", bm, check);
+                        } else {
+                            printf("[DBG] BM chain: a1=0x%lx a2=0x%lx bm=0x%lx sp=0x%lx count=%u (aneh, skip)\n",
+                                   a1, a2, bm, sp, check);
                         }
+                    } else {
+                        printf("[DBG] BM chain: a1=0x%lx a2=0x%lx bm=0x%lx sp INVALID\n", a1, a2, bm);
                     }
+                } else {
+                    printf("[DBG] BM chain gagal: a1=0x%lx a2=0x%lx bm=0x%lx\n", a1, a2, bm);
                 }
                 // 2) kalau belum, scan memory (lambat, tapi di background — menu tetep jalan)
                 if (!ok) {

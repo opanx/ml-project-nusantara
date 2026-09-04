@@ -38,7 +38,7 @@
 #define OFF_PLAYER_TEAM_ID           0x8e8      // m_iTeamId (ulong)
 #define OFF_PLAYER_TEAM_LEVEL        0x8f0      // m_uTeamLevel (uint)
 #define OFF_PLAYER_TEAM_NAME         0x8f8      // m_sTeamName (string)
-#define OFF_PLAYER_CERTIFY           0x900      // m_iCertify (uint)
+#define OFF_PLAYER_CERTIFY           0x908      // m_iCertify (uint)
 #define OFF_PLAYER_RANK_LEVEL        0x90c      // m_uiRankLevel (uint)
 #define OFF_PLAYER_DEFENCE_RANK      0x910      // m_uiDefenceRankLevel (uint)
 #define OFF_PLAYER_ROLE_LEVEL        0x914      // m_uiRoleLevel (uint)
