@@ -68,17 +68,32 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.16
-          name: "Panxcz Tool v1.16"
+          tag_name: v2.0
+          name: "Panxcz MLBB NUSANTARA v2.0"
           body: |
-            ## Panxcz Tool v1.16
+            ## Panxcz MLBB NUSANTARA v2.0
+
+            ### MAJOR — UPDATE TOTAL (v1.10 -> v2.0)
+            - **Offset game di-update ke dump 22.1.97.12061** (sebelumnya v2.1.95 yg sudah obsolete) → BattleManager sekarang ketemu langsung via chain `slot -> +0xa8 -> Instance`, fallback ke memory scanner kalau beda versi.
+            - **Touch helper universal** (sama dgn srcshen v1.0): scan `/dev/input` NULL-safe + fallback `/proc/bus/input/devices`, `block_untrusted_touches 0` otomatis (Android 12+/AOSP 16), uinput dibuat DULU baru grab device (kalau uinput gagal, layar sentuh game TETAP normal), slot 12 dedicated utk tap sintetik, kalibrasi 1-tap (Set Dot).
+            - **Auto Retri fix**: jarak max pakai `RETRI_MAX_DISTANCE 700` unit dunia (range retri asli MLBB) — sebelumnya hardcode `>5.0` yg bikin retri GA PERNAH kepencet kecuali monster nempel.
+            - **Posisi dot retri proporsional ke layar** (0.64W, 0.61H) — support semua resolusi HP, bukan hardcode 2460x1080.
+            - **Minimap fix**: bidang horizontal X/Y dunia (sebelumnya pakai Z yg bikin ikon minimap ga sinkron sama gerakan player).
+            - **Kill Steal Alert DIIMPLEMENTASI beneran**: alert + penanda di atas kepala musuh saat HP < threshold (sebelumnya cuma deklarasi).
+            - **Show Spell CD DIIMPLEMENTASI beneran**: 3 dot (S1/S2/ULT) di atas musuh — hijau=ready, merah=sisa detik (sebelumnya cuma checkbox kosong).
+            - **Room Info fix**: camp pakai `m_EntityCampType` (0xd0), battle spell pakai `m_iSummonSkillId` (0x95c) — sebelumnya offset salah.
+            - **fshy di-clamp 255** (anti buffer overflow dari string sampah).
+            - **`native_window_screen_y` = MIN** (dulu MAX → surface lebih tinggi dari layar).
+            - **Touch status live** di tab Retri (OK/FAILED + statistik mirror/tap + errno) + tombol **Set Dot** & **Test Tap**.
 
             ### Files
             | File | Type | Fungsi |
             |------|------|--------|
             | `PanxczTool` | ELF executable | Process list + inject .so ke game |
             | `libPanxczOverlay.so` | Shared library | ImGui overlay (di-load ke game) |
-            | `panxcz` | ELF executable | Mod menu (ESP + Retri) |
+            | `panxcz` | ELF executable | Mod menu (ESP + Retri + Combat + Minimap) |
+            | `dump.cs` | Dump reference | Offset & kelas utk update berikutnya |
+            | `Offset.h` | Offset header | Versi terbaru (22.1.97.12061) |
 
             ### Cara Pakai
 
@@ -90,18 +105,12 @@ jobs:
             # 2. Set permission
             adb shell chmod 777 /data/local/tmp/PanxczTool
 
-            # 3. Buka game dulu (MLBB, FF, dll)
+            # 3. Buka game dulu (MLBB)
 
             # 4. Jalankan PanxczTool (bisa via MT Manager!)
             adb shell
             su -c /data/local/tmp/PanxczTool
             ```
-
-            ### Flow
-            1. `PanxczTool` show process list
-            2. Pilih game (e.g. com.mobile.legends)
-            3. Inject `libPanxczOverlay.so` ke game via ptrace
-            4. ImGui overlay muncul di dalam game!
 
             ### Bisa buka di MT Manager
             Buka `PanxczTool` via MT Manager → pilih PID → Inject!

@@ -65,17 +65,18 @@ bool drawMName = true;
 bool drawAlertUnderAttack = true;
 bool iconhero = true;
 float RadiusCir = 50.0f;
-long libbase = 0;
-std::string fshy(uintptr_t address)
+long libbase = 0;std::string fshy(uintptr_t address)
 {
-    if (!address) return "";
+    if (!address) return "";
 
-    auto stringLength = Read<uint32_t>(address + 0x10);
-    char16_t buffer[255] = { 0 };
+    auto stringLength = Read<uint32_t>(address + 0x10);
+    // clamp: buffer 255 char16_t, jangan biar overflow kalau string sampah
+    if (stringLength > 255) stringLength = 255;
+    char16_t buffer[255] = { 0 };
 
-    pvm(reinterpret_cast<void *>(address + 0x14), reinterpret_cast<void *>(buffer), static_cast<size_t>(stringLength) * 2, false);
+    pvm(reinterpret_cast<void *>(address + 0x14), reinterpret_cast<void *>(buffer), static_cast<size_t>(stringLength) * 2, false);
 
-    return utf16_to_utf8(buffer, stringLength);
+    return utf16_to_utf8(buffer, stringLength);
 }
 
 struct RoomPlayerInfo {
@@ -330,6 +331,62 @@ void Touch_Tap(int x, int y) {
      Touch_Up();
 }
 
+// skill CD musuh: ShowCoolDownComp(ShowEntity+0xf8) -> _dicCD(0x18) Dictionary<Int32,CoolDownData>
+// slotReady[]: 3 slot (S1, S2, ULT) — true kalau ready; slotCd[]: sisa detik
+void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
+    for (int i = 0; i < 3; i++) { slotReady[i] = true; slotCd[i] = 0; }
+    auto comp = Read<uintptr_t>(entity + OFF_ENTITY_COOLDOWN_COMP); // m_ShowCoolDownComp
+    if (!comp) return;
+    auto dic = Read<uintptr_t>(comp + 0x18);    // _dicCD
+    if (!dic) return;
+    // il2cpp Dictionary: +0x18 _entries(array), +0x20 _count(int)
+    auto entries = Read<uintptr_t>(dic + 0x18);
+    int count = Read<int>(dic + 0x20);
+    if (!entries || count <= 0 || count > 64) return;
+    int alen = Read<int>(entries + 0x18);      // array length
+    if (alen < count || alen > 128) return;
+
+    // entry layout (il2cpp Dictionary<TKey,TVal>.Entry): hashCode@0, next@4, key@8, value@0x10; stride 0x18
+    uintptr_t base = entries + 0x20;
+    const int stride = 0x18;
+
+    int ids[16];
+    int cds[16];
+    int n = 0;
+    for (int i = 0; i < count && n < 16; i++) {
+        auto e = base + i * stride;
+        int spellID = Read<int>(e + 8);
+        auto cd = Read<uintptr_t>(e + 0x10);
+        if (!spellID || !cd) continue;
+        bool cooling = Read<bool>(cd + 0x20);           // m_isCoolDown
+        uint32_t remain = 0;
+        if (cooling) {
+            uint32_t coolTime = Read<uint32_t>(cd + 0x14);  // uiCoolTime
+            uint32_t startTime = Read<uint32_t>(cd + 0x1c); // uiStartTime
+            uint32_t now = (uint32_t)time(nullptr) * 1000;
+            if (coolTime > 0 && startTime > 0) {
+                uint32_t elapsed = now - startTime;
+                remain = (elapsed >= coolTime) ? 0 : (coolTime - elapsed) / 1000;
+            }
+        }
+        ids[n] = spellID;
+        cds[n] = (int)remain;
+        n++;
+    }
+    if (n == 0) return;
+    // sort by spellID (ID kecil = skill1, ID besar = ult)
+    for (int i = 0; i < n - 1; i++)
+        for (int j = i + 1; j < n; j++)
+            if (ids[j] < ids[i]) { int t=ids[i]; ids[i]=ids[j]; ids[j]=t; int u=cds[i]; cds[i]=cds[j]; cds[j]=u; }
+    // ambil 3 terakhir (skill2, skill1, ult) atau sesuai jumlah
+    int start = (n >= 3) ? n - 3 : 0;
+    int k = 0;
+    for (int i = start; i < n && k < 3; i++, k++) {
+        slotReady[k] = (cds[i] == 0);
+        slotCd[k] = cds[i];
+    }
+}
+
 bool lastRetriTriggered[20] = {false};
 bool autoRetribution = false;
 bool AutoRetributionRed = false;
@@ -467,6 +524,19 @@ void DrawMonster(ImDrawList *Draw) {
         DrawHeroIcon(ImGui::GetBackgroundDrawList(), iconPos, HeroID, Health, maxHealth);
         }
 
+        // Kill Steal Alert: musuh low HP -> peringatan di atas kepala + alert overlay
+        if (killStealAlert && !is_team) {
+            float hpPct = (float)Health / (float)maxHealth;
+            if (Health > 0 && hpPct <= killStealThreshold) {
+                char ks[64];
+                snprintf(ks, sizeof(ks), "KS! %d HP", Health);
+                绘制字体描边(22.5, HeroPos.X - 20, HeroPos.Y - 40, ImColor(255, 60, 60), ks);
+                snprintf(alertMessage, sizeof(alertMessage), "KILL STEAL: %s (%d HP)",
+                         fshy(Read<uintptr_t>(Objaddr + m_HeroName)).c_str(), Health);
+                alertTimer = 2.0f;
+            }
+        }
+
         if (drawMDistance) {
             std::string s;
             s += std::to_string((int)Distance);
@@ -476,6 +546,24 @@ void DrawMonster(ImDrawList *Draw) {
 
             auto textSize1 = ImGui::CalcTextSize(s.c_str(), 0, 29);
             绘制字体描边(22.5,HeroPos.X - (textSize1.x / 2), HeroPos.Y,ImColor(248,248,255),s.c_str());
+        }
+
+        // Show Spell CD: 3 slot (S1 S2 ULT) — hijau=ready, merah=sisa CD
+        if (showSpellCooldown && !is_team) {
+            bool slotReady[3]; int slotCd[3];
+            GetEnemySkillCD(Objaddr, slotReady, slotCd);
+            for (int si = 0; si < 3; si++) {
+                float sx = HeroPos.X - 22 + si * 16;
+                float sy = HeroPos.Y + 34;
+                if (slotReady[si]) {
+                    ImGui::GetForegroundDrawList()->AddCircleFilled(ImVec2(sx, sy), 5.0f, IM_COL32(80, 255, 80, 255));
+                } else {
+                    ImGui::GetForegroundDrawList()->AddCircleFilled(ImVec2(sx, sy), 5.0f, IM_COL32(255, 60, 60, 255));
+                    char cdBuf[8];
+                    snprintf(cdBuf, sizeof(cdBuf), "%d", slotCd[si]);
+                    ImGui::GetForegroundDrawList()->AddText(ImVec2(sx - 6, sy + 6), IM_COL32(255, 255, 255, 255), cdBuf);
+                }
+            }
         }
 
     }
@@ -530,7 +618,7 @@ void DrawMonster(ImDrawList *Draw) {
         if (MonPos.X < 0 || MonPos.X > abs_ScreenX || MonPos.Y < 0 || MonPos.Y > abs_ScreenY) {
             continue;
         }     
-        if (type == 5) {           
+        if (type == 5 && drawAlertUnderAttack) {           
            if (mHeroID == 2002 && Health < maxHealth) {
                std::string s = "LORD UNDER ATK!";
                std::string h;
@@ -688,6 +776,18 @@ int getRetriPriority(int monsterId) {
     return 0;
 }
 
+// Tap retri: pakai koordinat NATIVE hasil kalibrasi (Set Dot) kalau ada,
+// fallback ke koordinat logical (proporsional layar). Hold sesuai retriHoldMs.
+static void RetriTap() {
+    if (g_retriNativeX >= 0 && g_retriNativeY >= 0) {
+        printf("[RETRI] tap native (%d,%d)\n", g_retriNativeX, g_retriNativeY);
+        Touch_TapNative(g_retriNativeX, g_retriNativeY, 80);
+    } else {
+        printf("[RETRI] tap logical (%.0f,%.0f)\n", retriTouchX, retriTouchY);
+        Touch_Tap((int) retriTouchX, (int) retriTouchY);
+    }
+}
+
 void CheckAndTriggerRetribution() {
     if (!autoRetribution || !Oneself || MonsterCount <= 0) return;
     int myLevel = Read<int>(Oneself + OFF_ENTITY_LEVEL);
@@ -702,7 +802,7 @@ void CheckAndTriggerRetribution() {
             lastRetriTriggered[i] = false;
             continue;
         }
-        if (monster[i].distance > 5.0f) {
+        if (monster[i].distance > RETRI_MAX_DISTANCE) {
             lastRetriTriggered[i] = false;
             continue;
         }
@@ -724,7 +824,7 @@ void CheckAndTriggerRetribution() {
     for (int i = 0; i < MonsterCount; i++) {
         if (i == bestIdx) {
             if (!lastRetriTriggered[i]) {
-                Touch_Tap(retriTouchX, retriTouchY);
+                RetriTap();
                 lastRetriTriggered[i] = true;
                 // Kill Steal Alert
                 if (killStealAlert) {
@@ -750,7 +850,7 @@ void RoomInfoList() {
     int playerCount = Read<int>(playersListPtr + 0x18);
     if (playerCount <= 0 || !playersList) return;
 
-    uint32_t myTeamCamp = Read<uint32_t>(selfp + OFF_PLAYER_POS);
+    uint32_t myTeamCamp = Read<uint32_t>(selfp + OFF_ENTITY_CAMP);
 
     int playerB = 0;
     int playerR = 0;
@@ -767,10 +867,10 @@ void RoomInfoList() {
         std::string uid = std::to_string(lUid) + " (" + std::to_string(zoneId) + ")";
 
         uint32_t heroid = Read<uint32_t>(obj + OFF_ENTITY_ID);
-        int spellId = Read<int>(obj + OFF_PLAYER_CERTIFY + 0x4);
+        int spellId = Read<int>(obj + OFF_PLAYER_SUMMON_SKILL);
         uint32_t rank = Read<uint32_t>(obj + OFF_PLAYER_RANK_LEVEL);
         uint32_t myth = Read<uint32_t>(obj + OFF_PLAYER_ROLE_LEVEL);
-        uint32_t camp = Read<uint32_t>(obj + OFF_PLAYER_POS);
+        uint32_t camp = Read<uint32_t>(obj + OFF_ENTITY_CAMP);
 
         std::string hero = HeroToString(heroid);
         std::string spell = SpellToString(spellId);
@@ -796,14 +896,19 @@ float g_Res1_OffsetX = 0.0f;
 float g_Res1_OffsetY = 0.0f;
 int g_ICSize = 38;
 
+// Minimap harus pakai bidang horizontal (X & Y dunia), BUKAN sumbu vertikal (Z-up).
+// HeroPosition.X = worldX, HeroPosition.Y = worldZ (horizontal) — fix sinkronisasi minimap.
 Vector2 WorldToMinimap(Vector3 HeroPosition) {
     float angle = 314.60f * 0.017453292519943295f;
     float angleCos = std::cos(angle);
     float angleSin = std::sin(angle);
 
+    float worldX = HeroPosition.X;
+    float worldZ = HeroPosition.Y;
+
     Vector2 Res0;
-    Res0.X = ((angleCos * HeroPosition.X - angleSin * (-HeroPosition.Z)) / g_MinimapScale) * g_Res0_MultX;
-    Res0.Y = ((angleSin * HeroPosition.Y + angleCos * (-HeroPosition.Z)) / g_MinimapScale) * g_Res0_MultY;
+    Res0.X = ((angleCos * worldX - angleSin * (-worldZ)) / g_MinimapScale) * g_Res0_MultX;
+    Res0.Y = ((angleSin * worldX + angleCos * (-worldZ)) / g_MinimapScale) * g_Res0_MultY;
 
     Vector2 Res1;
     Res1.X = (Res0.X * MinimapSize) + MinimapPos + MinimapSize / 2.0f + g_Res1_OffsetX;
@@ -870,6 +975,28 @@ ImGui::Begin(oxorany("         Panxcz v1.10 - MLBB Tool"), nullptr, window_flags
             ImGui::SliderFloat(oxorany("Adjust X"), &retriTouchX, 0.0f, 3000.0f, "%.0f");
             ImGui::SliderFloat(oxorany("Adjust Y"), &retriTouchY, 0.0f, 1500.0f, "%.0f");
 
+            // Kalibrasi 1-tap: Set Dot -> tap sekali di tombol retri di layar game
+            if (ImGui::Button(oxorany("Set Dot"))) {
+                g_retriCapture = true;
+            }
+            ImGui::SameLine();
+            if (ImGui::Button(oxorany("Test Tap"))) {
+                if (g_retriNativeX >= 0 && g_retriNativeY >= 0) {
+                    printf("[RETRI] test tap native (%d,%d)\n", g_retriNativeX, g_retriNativeY);
+                    Touch_TapNative(g_retriNativeX, g_retriNativeY, 80);
+                } else {
+                    printf("[RETRI] test tap logical (%.0f,%.0f)\n", retriTouchX, retriTouchY);
+                    Touch_Tap((int) retriTouchX, (int) retriTouchY);
+                }
+            }
+            if (g_retriNativeX >= 0 && g_retriNativeY >= 0)
+                ImGui::Text(oxorany("Calibrated: (%d, %d)"), g_retriNativeX, g_retriNativeY);
+            else
+                ImGui::TextDisabled(oxorany("Belum kalibrasi - tap 'Set Dot' lalu tap 1x di tombol retri"));
+            ImGui::TextDisabled(oxorany("Touch: %s | mirror=%lldB tap=%lldB err=%d"),
+                g_touchInitOk ? "OK" : "FAILED",
+                (long long) g_touchMirrorBytes, (long long) g_touchTapBytes, g_touchLastErr);
+
             ImGui::Separator();
             ImGui::Text(oxorany("Targets:"));
             ImGui::Checkbox(oxorany("Lord"), &AutoRetributionLord);
@@ -903,6 +1030,7 @@ ImGui::Begin(oxorany("         Panxcz v1.10 - MLBB Tool"), nullptr, window_flags
         if (ImGui::BeginTabItem(oxorany("Combat"))) {
             ImGui::Checkbox(oxorany("Kill Steal Alert"), &killStealAlert);
             ImGui::SliderFloat(oxorany("KS Threshold %%"), &killStealThreshold, 0.05f, 0.50f, "%.0f%%");
+            ImGui::TextDisabled(oxorany("Alert saat musuh HP < %.0f%%"), killStealThreshold * 100.0f);
             ImGui::Checkbox(oxorany("Show KDA"), &showKDA);
             ImGui::Checkbox(oxorany("Show Spell CD"), &showSpellCooldown);
             ImGui::EndTabItem();
@@ -1011,8 +1139,16 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     ::abs_ScreenX = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
     ::abs_ScreenY = (displayInfo.height < displayInfo.width ? displayInfo.height : displayInfo.width);
     ::native_window_screen_x = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
-    ::native_window_screen_y = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
+    // NOTE: y harus dimensi MIN, bukan max (dulu salah -> surface lebih tinggi dari layar)
+    ::native_window_screen_y = (displayInfo.height < displayInfo.width ? displayInfo.height : displayInfo.width);
     printf("[+] Screen: %dx%d\n", abs_ScreenX, abs_ScreenY);
+
+    // Posisi default tombol retri: proporsional ke layar (support semua resolusi/HP).
+    if (retriTouchX < 0 || retriTouchY < 0) {
+        retriTouchX = abs_ScreenX * 0.64f;
+        retriTouchY = abs_ScreenY * 0.61f;
+        printf("[+] Retri dot default (proporsional): (%.0f, %.0f) - Set Dot utk presisi\n", retriTouchX, retriTouchY);
+    }
     
     if (!initGUI_draw(native_window_screen_x, native_window_screen_y, true)) {
         printf("[-] Failed to init ImGui!\n");
@@ -1020,26 +1156,35 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     }
     printf("[+] ImGui initialized\n");
     
-    Touch_Init(displayInfo.width, displayInfo.height, displayInfo.orientation, false);
-    printf("[+] Touch initialized\n");
+    g_touchInitOk = Touch_Init(displayInfo.width, displayInfo.height, displayInfo.orientation, false) ? 1 : 0;
+    if (g_touchInitOk)
+        printf("[+] Touch initialized\n");
+    else
+        printf("[-] Touch_Init FAILED - auto retri & mirror touch tidak aktif!\n");
     
     ImGui::GetStyle().WindowRounding = 25.0f;
     printf("[+] Starting main loop...\n");
     
     // === Find BattleManager ===
     {
-        long bm = getPtr641(libbase + OFF_BATTLE_MANAGER);
+        // Chain baru (dump 22.1.97.12061): slot -> static_fields(+0xa8) -> Instance(deref)
+        long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER);
+        long a2 = a1 ? getPtr641(a1 + OFF_BM_STATIC_FIELDS) : 0;
+        long bm = a2 ? getPtr641(a2) : 0;
         bool bmValid = false;
         if (bm > 0x10000 && bm < 0x7FFFFFFFFFFF) {
-            uint32_t check = 0;
-            if (pvm((void*)bm, &check, 4, false) && check != 0) {
-                bmValid = true;
-                g_BattleManager = bm;
-                printf("[+] BattleManager from offset: 0x%lx\n", bm);
+            long sp = getPtr641(bm + OFF_SHOW_PLAYERS);
+            if (sp > 0x10000 && sp < 0x7FFFFFFFFFFF) {
+                uint32_t check = Read<uint>(sp + 0x18);
+                if (check > 0 && check <= 20) {
+                    bmValid = true;
+                    g_BattleManager = bm;
+                    printf("[+] BattleManager from offset: 0x%lx (players=%u)\n", bm, check);
+                }
             }
         }
         if (!bmValid) {
-            printf("[!] Hardcoded offset 0x%x is wrong, scanning memory...\n", OFF_BATTLE_MANAGER);
+            printf("[!] Hardcoded offset 0x%x wrong, scanning memory...\n", OFF_BATTLE_MANAGER);
             long scanned = FindBattleManager();
             if (scanned) {
                 g_BattleManager = scanned;
@@ -1047,18 +1192,6 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
             } else {
                 printf("[-] BattleManager NOT FOUND! Features disabled.\n");
                 printf("[-] Game may not be in a match.\n");
-            }
-        }
-        // Verify scanner result works
-        if (g_BattleManager) {
-            long sp = getPtr641(g_BattleManager + OFF_SHOW_PLAYERS);
-            if (sp > 0x10000 && sp < 0x7FFFFFFFFFFF) {
-                uint32_t pc = Read<uint>(sp + 0x18);
-                printf("[+] Verified: ShowPlayers count = %u\n", pc);
-            } else {
-                printf("[!] ShowPlayers invalid, re-scanning...\n");
-                long scanned = FindBattleManager();
-                if (scanned) g_BattleManager = scanned;
             }
         }
     }
@@ -1072,6 +1205,13 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
                 usleep(500000);
                 continue;
             }
+        }
+        // hasil kalibrasi 1-tap: gerakkan dot marker ke posisi logical yang sama
+        if (g_retriLogicalX >= 0.0f) {
+            retriTouchX = g_retriLogicalX;
+            retriTouchY = g_retriLogicalY;
+            g_retriLogicalX = -1.0f;
+            g_retriLogicalY = -1.0f;
         }
         // Re-validate BattleManager periodically
         if (debugFrameCount % 600 == 0 && g_BattleManager) {

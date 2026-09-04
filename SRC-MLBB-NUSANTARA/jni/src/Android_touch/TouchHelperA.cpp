@@ -5,6 +5,8 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <cmath>
+#include <cerrno>
+#include <cstring>
 #include <linux/input.h>
 #include <linux/uinput.h>
 
@@ -17,6 +19,24 @@
 
 
 bool other_touch; //其他触摸
+
+// Kalibrasi retri: di-capture dari sentuhan asli di thread TypeA
+bool g_retriCapture = false;
+int  g_retriNativeX = -1;
+int  g_retriNativeY = -1;
+float g_retriLogicalX = -1.0f;
+float g_retriLogicalY = -1.0f;
+
+// Diagnostics touch (dibaca UI utk debug)
+bool g_touchDebugLog = true;
+int  g_touchInitOk = 0;
+int  g_touchFdCount = 0;
+long long g_touchMirrorWrites = 0;
+long long g_touchMirrorBytes = 0;
+long long g_touchTapWrites = 0;
+long long g_touchTapBytes = 0;
+int  g_touchLastErr = 0;
+char g_touchDevName[64] = "";
 
 
 static uint32_t orientation = 0;
@@ -37,12 +57,6 @@ struct targ {
     float S2TY;
 };
 
-static struct {
-    input_event downEvent[2]{{{}, EV_KEY, BTN_TOUCH,       1},
-                             {{}, EV_KEY, BTN_TOOL_FINGER, 1}};
-    input_event event[512]{0};
-} input;
-
 static targ targF[maxE];
 
 static touchObj Finger[maxE][maxF];
@@ -54,6 +68,93 @@ static float scale_x, scale_y;
 static bool Touch_initialized = false;
 
 static bool Touch_readOnly = false;
+
+// ===== Injector sentuhan sintetik (auto-retri) =====
+// Penting: pakai SLOT sendiri (12) yg TIDAK dipakai driver asli, jadi tap sintetik
+// TIDAK nyatu sama jari asli (mis. jempol kiri di joystick). Dulu digabung ke slot 0
+// -> tap retri malah kaya gerak joystick / nyentuh tombol lain.
+static const int SYN_SLOT     = 12;
+static const int SYN_TRACKING = 0x4000;
+static bool g_synDown = false;
+static volatile int g_realContacts = 0;   // jari asli yg lagi nempel (buat BTN_TOUCH up)
+
+static void SendTapUp();   // forward decl (dipakai SendTapDown)
+
+static void SendTapDown(int nx, int ny) {
+    if (!Touch_initialized || nowfd <= 0) return;
+    if (g_synDown) SendTapUp();
+    struct input_event ev[10];
+    int c = 0;
+    ev[c++] = {EV_ABS, ABS_MT_SLOT, SYN_SLOT};
+    ev[c++] = {EV_ABS, ABS_MT_TRACKING_ID, SYN_TRACKING};
+    ev[c++] = {EV_ABS, ABS_MT_POSITION_X, nx};
+    ev[c++] = {EV_ABS, ABS_MT_POSITION_Y, ny};
+    ev[c++] = {EV_ABS, ABS_X, nx};
+    ev[c++] = {EV_ABS, ABS_Y, ny};
+    ev[c++] = {EV_SYN, SYN_MT_REPORT, 0};
+    ev[c++] = {EV_KEY, BTN_TOUCH, 1};
+    ev[c++] = {EV_KEY, BTN_TOOL_FINGER, 1};
+    ev[c++] = {EV_SYN, SYN_REPORT, 0};
+    ssize_t wrc = write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    if (wrc > 0) { g_touchTapWrites++; g_touchTapBytes += wrc; }
+    else if (wrc < 0) g_touchLastErr = errno;
+    if (g_touchDebugLog)
+        printf("[TOUCH] tap DOWN (%d,%d) fd=%d bytes=%zd errno=%d\n", nx, ny, nowfd, wrc, errno);
+    g_synDown = true;
+}
+
+static void SendTapMove(int nx, int ny) {
+    if (!Touch_initialized || nowfd <= 0 || !g_synDown) return;
+    struct input_event ev[8];
+    int c = 0;
+    ev[c++] = {EV_ABS, ABS_MT_SLOT, SYN_SLOT};
+    ev[c++] = {EV_ABS, ABS_MT_POSITION_X, nx};
+    ev[c++] = {EV_ABS, ABS_MT_POSITION_Y, ny};
+    ev[c++] = {EV_ABS, ABS_X, nx};
+    ev[c++] = {EV_ABS, ABS_Y, ny};
+    ev[c++] = {EV_SYN, SYN_REPORT, 0};
+    ssize_t wrc = write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    if (wrc > 0) { g_touchTapWrites++; g_touchTapBytes += wrc; }
+    else if (wrc < 0) g_touchLastErr = errno;
+}
+
+static void SendTapUp() {
+    if (!Touch_initialized || nowfd <= 0) return;
+    if (!g_synDown) return;
+    struct input_event ev[6];
+    int c = 0;
+    ev[c++] = {EV_ABS, ABS_MT_SLOT, SYN_SLOT};
+    ev[c++] = {EV_ABS, ABS_MT_TRACKING_ID, -1};
+    ev[c++] = {EV_SYN, SYN_MT_REPORT, 0};
+    if (g_realContacts <= 0) {
+        ev[c++] = {EV_KEY, BTN_TOUCH, 0};
+        ev[c++] = {EV_KEY, BTN_TOOL_FINGER, 0};
+    }
+    ev[c++] = {EV_SYN, SYN_REPORT, 0};
+    ssize_t wrc = write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    if (wrc > 0) { g_touchTapWrites++; g_touchTapBytes += wrc; }
+    else if (wrc < 0) g_touchLastErr = errno;
+    if (g_touchDebugLog)
+        printf("[TOUCH] tap UP fd=%d bytes=%zd errno=%d\n", nowfd, wrc, errno);
+    g_synDown = false;
+}
+
+bool Touch_Busy() {
+    return g_realContacts > 0 || g_synDown;
+}
+
+// logical (layar overlay) -> native device coordinate
+static void LogicalToNative(float xt, float yt, int *ox, int *oy) {
+    float x = xt, y = yt;
+    switch (orientation) {
+        case 1:  x = screenHeight - yt; y = xt; break;
+        case 2:  x = screenWidth - xt;  y = screenHeight - yt; break;
+        case 3:  x = yt;                y = screenWidth - xt;  break;
+        default: x = xt;                y = yt; break;
+    }
+    *ox = (int) (x * scale_x);
+    *oy = (int) (y * scale_y);
+}
 
 static bool checkDeviceIsTouch(int fd);
 static void genRandomString(char *string, int length) {
@@ -80,86 +181,6 @@ static void genRandomString(char *string, int length) {
 }
 
 
-static void Upload() {
-    static bool bTouch = false;
-    static bool isFirstDown = true;
-    while (bTouch);
-    bTouch = true;
-    int tmpCnt = 0, tmpCnt2 = 0, i, j;
-    for (i = 0; i < fdNum; i++) {
-        for (j = 0; j < maxF; j++) {
-            if (Finger[i][j].isDown) {
-                if (tmpCnt2++ > 10) {
-                    goto finish;
-                }
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_X;
-                input.event[tmpCnt].value = Finger[i][j].x;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_Y;
-                input.event[tmpCnt].value = Finger[i][j].y;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_MT_POSITION_X;
-                input.event[tmpCnt].value = Finger[i][j].x;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_MT_POSITION_Y;
-                input.event[tmpCnt].value = Finger[i][j].y;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_ABS;
-                input.event[tmpCnt].code = ABS_MT_TRACKING_ID;
-                input.event[tmpCnt].value = Finger[i][j].id;
-                tmpCnt++;
-
-                input.event[tmpCnt].type = EV_SYN;
-                input.event[tmpCnt].code = SYN_MT_REPORT;
-                input.event[tmpCnt].value = 0;
-                tmpCnt++;
-            }
-        }
-    }
-    finish:
-    bool is = false;
-    if (tmpCnt == 0) {
-        input.event[tmpCnt].type = EV_SYN;
-        input.event[tmpCnt].code = SYN_MT_REPORT;
-        input.event[tmpCnt].value = 0;
-        tmpCnt++;
-        if (!isFirstDown) {
-            isFirstDown = true;
-            input.event[tmpCnt].type = EV_KEY;
-            input.event[tmpCnt].code = BTN_TOUCH;
-            input.event[tmpCnt].value = 0;
-            tmpCnt++;
-            input.event[tmpCnt].type = EV_KEY;
-            input.event[tmpCnt].code = BTN_TOOL_FINGER;
-            input.event[tmpCnt].value = 0;
-            tmpCnt++;
-        }
-    } else {
-        is = true;
-    }
-    input.event[tmpCnt].type = EV_SYN;
-    input.event[tmpCnt].code = SYN_REPORT;
-    input.event[tmpCnt].value = 0;
-    tmpCnt++;
-
-    if (is && isFirstDown) {
-        isFirstDown = false;
-        write(nowfd, &input, sizeof(struct input_event) * (tmpCnt + 2));
-    } else {
-        write(nowfd, input.event, sizeof(struct input_event) * tmpCnt);
-    }
-
-    bTouch = false;
-}
-
 static void *TypeA(void *arg) {
     targ tmp = *(targ *) arg;
     int i = tmp.fdNum;
@@ -182,11 +203,17 @@ static void *TypeA(void *arg) {
                     continue;
                 }
                 if (ie.code == ABS_MT_TRACKING_ID) {
-                    if (ie.value == -1) {
-                        Finger[i][latest].isDown = false;
-                    } else {
+                    bool was = Finger[i][latest].isDown;
+                    bool nowDown = (ie.value != -1);
+                    if (was != nowDown) {
+                        g_realContacts += nowDown ? 1 : -1;
+                        if (g_realContacts < 0) g_realContacts = 0;
+                    }
+                    if (nowDown) {
                         Finger[i][latest].id = (i * 2 + 1) * maxF + latest;
                         Finger[i][latest].isDown = true;
+                    } else {
+                        Finger[i][latest].isDown = false;
                     }
                     continue;
                 }
@@ -201,7 +228,7 @@ static void *TypeA(void *arg) {
                     continue;
                 }
             }
-            if (ie.code == SYN_REPORT) {
+            if (ie.type == EV_SYN && ie.code == SYN_REPORT) {
                 ImGuiIO &io = ImGui::GetIO();
                 if (Finger[i][latest].isDown) {
                     float x = Finger[i][latest].x, y = Finger[i][latest].y;
@@ -253,37 +280,123 @@ static void *TypeA(void *arg) {
                     io.MousePos = {x, y};
                     // LOGD("final %d %.1f %.1f\n", other_touch, x, y);
                     io.MouseDown[0] = true;
+                    // Kalibrasi 1-tap: simpan posisi native + logical sentuhan asli ini
+                    if (g_retriCapture) {
+                        g_retriNativeX = Finger[i][latest].x;
+                        g_retriNativeY = Finger[i][latest].y;
+                        g_retriLogicalX = x;
+                        g_retriLogicalY = y;
+                        g_retriCapture = false;
+                    }
                 } else {
                     io.MouseDown[0] = false;
                     //  LOGD("抬起");
                 }
-                if (!Touch_readOnly) {
-                    Upload();
-                }
                 continue;
             }
+        }
+        // Verbatim mirror: teruskan event asli apa adanya (ABS_MT_SLOT, TRACKING_ID,
+        // urutan & timing driver asli) ke uinput clone. Game terima stream identik dgn
+        // kondisi tanpa overlay -> gesture/flick MLBB (quick emote, slide chat) tetap
+        // natural. Tap sintetik (retri) injeksi lewat slot terpisah (SendTap*).
+        if (!Touch_readOnly && nowfd > 0) {
+            ssize_t wrc = write(nowfd, inputEvent, (size_t) readSize);
+            if (wrc > 0) { g_touchMirrorWrites++; g_touchMirrorBytes += wrc; }
+            else if (wrc < 0) g_touchLastErr = errno;
         }
     }
     return nullptr;
 }
 
 
-bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
-    char temp[128];
+// Android 12+ memblokir sentuhan dari perangkat uinput sbg "untrusted" kecuali
+// setting ini dimatikan (persis yg dilakukan herz-kimmy.sh biar retri/touch jalan).
+static void DisableUntrustedTouchBlock() {
+    system("settings put global block_untrusted_touches 0 > /dev/null 2>&1");
+    system("settings put secure block_untrusted_touches 0 > /dev/null 2>&1");
+    system("settings put system block_untrusted_touches 0 > /dev/null 2>&1");
+}
+
+// ===== Discovery universal device sentuh =====
+// 1) scan /dev/input/event* (standar). 2) fallback parse /proc/bus/input/devices
+// (beberapa ROM/SELinux sembunyikan /dev/input atau penomoran event beda).
+// Return: jumlah path event ditemukan (max maxE), isi evpath[] dgn "/dev/input/eventN".
+static int DiscoverTouchDevices(char evpath[maxE][64]) {
+    int found = 0;
+    // --- cara 1: /dev/input/event* ---
     DIR *dir = opendir("/dev/input/");
-    dirent *ptr = NULL;
-    int eventCount = 0;
-    while ((ptr = readdir(dir)) != NULL) {
-        if (strstr(ptr->d_name, "event"))
-            eventCount++;
+    if (dir) {
+        dirent *ptr;
+        while ((ptr = readdir(dir)) != NULL && found < maxE) {
+            if (strncmp(ptr->d_name, "event", 5) != 0) continue;
+            char *end;
+            long num = strtol(ptr->d_name + 5, &end, 10);
+            if (end == ptr->d_name + 5 || *end != '\0') continue; // eventX aja, skip yg aneh
+            if (num < 0 || num > 4096) continue;
+            snprintf(evpath[found], 64, "/dev/input/event%ld", num);
+            found++;
+        }
+        closedir(dir);
+    } else {
+        printf("[TOUCH] /dev/input/ ga bisa dibuka, coba /proc/bus/input/devices...\n");
     }
-    struct input_absinfo abs, absX[maxE], absY[maxE];
+    // --- cara 2: fallback /proc/bus/input/devices ---
+    if (found == 0) {
+        FILE *fp = fopen("/proc/bus/input/devices", "r");
+        if (fp) {
+            char line[512];
+            char handlers[512] = "";
+            bool hasAbsMT = false;
+            while (fgets(line, sizeof(line), fp)) {
+                if (line[0] == 'I' || line[0] == 'N' || line[0] == 'P' ||
+                    line[0] == 'S' || line[0] == 'U' || line[0] == 'B') {
+                    if (strncmp(line, "H: Handlers", 11) == 0) {
+                        snprintf(handlers, sizeof(handlers), "%s", line + 12);
+                    } else if (strncmp(line, "B: ABS", 6) == 0) {
+                        // bit ABS_MT_POSITION_X (0x35) & ABS_MT_POSITION_Y (0x36)
+                        if (strstr(line, "35000000") || strstr(line, "3f000000") ||
+                            strstr(line, "3f") || strstr(line, "ffffffff"))
+                            hasAbsMT = true;
+                    }
+                } else if (line[0] == '\n' || line[0] == '\r' || line[0] == 0) {
+                    // akhir blok device: cek punya eventN + abs-mt
+                    if (hasAbsMT && handlers[0]) {
+                        char *tok = strtok(handlers, " ");
+                        while (tok && found < maxE) {
+                            if (strncmp(tok, "event", 5) == 0) {
+                                char *end;
+                                long num = strtol(tok + 5, &end, 10);
+                                if (end != tok + 5 && *end == '\0' && num >= 0 && num <= 4096) {
+                                    snprintf(evpath[found], 64, "/dev/input/event%ld", num);
+                                    found++;
+                                }
+                            }
+                            tok = strtok(NULL, " ");
+                        }
+                    }
+                    handlers[0] = '\0';
+                    hasAbsMT = false;
+                }
+            }
+            fclose(fp);
+        } else {
+            printf("[TOUCH] /proc/bus/input/devices juga ga bisa dibaca\n");
+        }
+    }
+    return found;
+}
+
+bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
+    if (!readOnly) DisableUntrustedTouchBlock();
+    char evpath[maxE][64];
+    int evCount = DiscoverTouchDevices(evpath);
+    struct input_absinfo absX[maxE], absY[maxE];
     int fd, i, tmp1, tmp2;
-    int screenX, screenY, minCnt = eventCount + 1;
+    int screenX = 0, screenY = 0;
     fdNum = 0;
-    for (i = 0; i <= eventCount; i++) {
-        sprintf(temp, "/dev/input/event%d", i);
-        fd = open(temp, O_RDWR);
+    // ===== FASE 1: cari & buka device sentuh (BELUM di-grab) =====
+    for (i = 0; i < evCount && fdNum < maxE; i++) {
+        fd = open(evpath[i], O_RDWR);
         if (fd < 0) {
             continue;
         }
@@ -291,33 +404,41 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
             tmp1 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &absX[fdNum]);
             tmp2 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY[fdNum]);
             if (tmp1 == 0 && tmp2 == 0) {
+                if (fdNum == 0) {
+                    char nm[64] = "";
+                    if (ioctl(fd, EVIOCGNAME(sizeof(nm) - 1), nm) >= 0)
+                        strncpy(g_touchDevName, nm, sizeof(g_touchDevName) - 1);
+                    screenX = absX[0].maximum;
+                    screenY = absY[0].maximum;
+                }
                 origfd[fdNum] = fd;
-                if (!readOnly) {
-                    ioctl(fd, EVIOCGRAB, GRAB);
-                }
-                if (i < minCnt) {
-                    screenX = absX[fdNum].maximum;
-                    screenY = absY[fdNum].maximum;
-                    minCnt = i;
-                }
                 fdNum++;
-                if (fdNum >= maxE)
-                    break;
+            } else {
+                close(fd);
             }
         } else {
             close(fd);
         }
     }
 
-    if (minCnt > eventCount) {
-        puts("Failed init touch!");
+    if (fdNum <= 0) {
+        printf("[TOUCH] FAILED: tidak ada device sentuh ditemukan (%d event node)\n", evCount);
         return false;
     }
 
+    // ===== FASE 2: buat uinput DULU (baru grab device asli) =====
+    // Kalau uinput gagal -> device asli TIDAK di-grab -> game tetap bisa disentuh.
     if (!readOnly) {
         struct uinput_user_dev ui_dev;
+        memset(&ui_dev, 0, sizeof(ui_dev));
         nowfd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
         if (nowfd <= 0) {
+            printf("[TOUCH] FAILED: /dev/uinput ga bisa dibuka (errno=%d). Touch asli TIDAK di-grab, game tetap normal. Fitur tap sintetik nonaktif.\n", errno);
+            for (i = 0; i < fdNum; i++) {
+                close(origfd[i]);
+                origfd[i] = 0;
+            }
+            fdNum = 0;
             return false;
         }
 
@@ -336,22 +457,32 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
         ioctl(nowfd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
 
         ioctl(nowfd, UI_SET_EVBIT, EV_ABS);
-        ioctl(nowfd, UI_SET_ABSBIT, ABS_X);
-        ioctl(nowfd, UI_SET_ABSBIT, ABS_Y);
-        ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_POSITION_X);
-        ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_POSITION_Y);
-        ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_TRACKING_ID);
         ioctl(nowfd, UI_SET_EVBIT, EV_SYN);
         ioctl(nowfd, UI_SET_EVBIT, EV_KEY);
         ioctl(nowfd, UI_SET_KEYBIT, BTN_TOOL_FINGER);
         ioctl(nowfd, UI_SET_KEYBIT, BTN_TOUCH);
 
+        // BASE ABS yang selalu kita inject (tap sintetik slot 12 + koordinat).
+        // Wajib terdaftar di uinput, kalau tidak kernel tolak batch write -> -EINVAL.
+        ioctl(nowfd, UI_SET_ABSBIT, ABS_X);
+        ioctl(nowfd, UI_SET_ABSBIT, ABS_Y);
+        ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_SLOT);
+        ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_POSITION_X);
+        ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_POSITION_Y);
+        ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_TRACKING_ID);
+        ui_dev.absmin[ABS_X] = 0; ui_dev.absmax[ABS_X] = screenX;
+        ui_dev.absmin[ABS_Y] = 0; ui_dev.absmax[ABS_Y] = screenY;
+        ui_dev.absmin[ABS_MT_SLOT] = 0; ui_dev.absmax[ABS_MT_SLOT] = 15;
+        ui_dev.absmin[ABS_MT_POSITION_X] = 0; ui_dev.absmax[ABS_MT_POSITION_X] = screenX;
+        ui_dev.absmin[ABS_MT_POSITION_Y] = 0; ui_dev.absmax[ABS_MT_POSITION_Y] = screenY;
+        ui_dev.absmin[ABS_MT_TRACKING_ID] = 0; ui_dev.absmax[ABS_MT_TRACKING_ID] = 65535;
+
         genRandomString(string, string_len);
         ioctl(nowfd, UI_SET_PHYS, string);
 
-        sprintf(temp, "/dev/input/event%d", minCnt);
-        fd = open(temp, O_RDWR);
-        if (fd) {
+        // salin id + abs/key bits dari device sentuh asli (pakai fd yg sudah terbuka)
+        fd = origfd[0];
+        if (fd > 0) {
             struct input_id id;
             if (!ioctl(fd, EVIOCGID, &id)) {
                 ui_dev.id.bustype = id.bustype;
@@ -359,6 +490,35 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
                 ui_dev.id.product = id.product;
                 ui_dev.id.version = id.version;
             }
+            // Salin SEMUA kode ABS tambahan + range dari device asli (ABS_MT_PRESSURE,
+            // ABS_MT_TOUCH_MAJOR, dll). Penting: mirror verbatim meneruskan event apa
+            // adanya - kalau kode itu ga didaftarkan, kernel nolak SELURUH batch write
+            // -> game ga nerima sentuhan sama sekali (regresi touch di v0.5+).
+            // Buffer tetap cukup (ABS_CNT=64 -> 8 bytes; kita kasih 16).
+            uint8_t abits[16];
+            memset(abits, 0, sizeof(abits));
+            int res2 = (int) ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abits)), abits);
+            if (res2 > 0) {
+                struct input_absinfo ai;
+                for (int j = 0; j < res2 && j < (int) sizeof(abits); j++) {
+                    for (int k = 0; k < 8; k++) {
+                        if (!(abits[j] & (1 << k))) continue;
+                        int code = j * 8 + k;
+                        if (code >= ABS_MAX) continue;
+                        if (code == ABS_X || code == ABS_Y || code == ABS_MT_SLOT ||
+                            code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y ||
+                            code == ABS_MT_TRACKING_ID) continue; // sudah di-set di atas
+                        if (ioctl(nowfd, UI_SET_ABSBIT, code) != 0) continue;
+                        if (ioctl(fd, EVIOCGABS(code), &ai) == 0) {
+                            ui_dev.absmin[code] = ai.minimum;
+                            ui_dev.absmax[code] = ai.maximum;
+                            ui_dev.absfuzz[code] = ai.fuzz;
+                            ui_dev.absflat[code] = ai.flat;
+                        }
+                    }
+                }
+            }
+
             uint8_t *bits = NULL;
             ssize_t bits_size = 0;
             int res, j, k;
@@ -389,10 +549,18 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
         ui_dev.absmax[ABS_Y] = screenY;
         ui_dev.absmin[ABS_MT_TRACKING_ID] = 0;
         ui_dev.absmax[ABS_MT_TRACKING_ID] = 65535;
+        ui_dev.absmin[ABS_MT_SLOT] = 0;
+        ui_dev.absmax[ABS_MT_SLOT] = 15;
         write(nowfd, &ui_dev, sizeof(ui_dev));
 
         if (ioctl(nowfd, UI_DEV_CREATE)) {
             return false;
+        }
+    }
+    // ===== FASE 3: grab device asli + start thread mirror =====
+    if (!readOnly) {
+        for (i = 0; i < fdNum; i++) {
+            ioctl(origfd[i], EVIOCGRAB, GRAB);
         }
     }
     Touch_initialized = true;
@@ -418,6 +586,10 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
         ::scale_y = (float) screenY / h;    
     }
 
+    g_touchInitOk = 1;
+    g_touchFdCount = fdNum;
+    printf("[TOUCH] init OK: %d device grabbed [%s], uinput fd=%d, screen %dx%d\n",
+           fdNum, g_touchDevName[0] ? g_touchDevName : "?", nowfd, screenX, screenY);
     system("chmod 000 -R /proc/bus/input/*");
     return true;
 }
@@ -478,50 +650,28 @@ void Touch_Close() {
         }
         fdNum = 0;
         memset(Finger, 0, sizeof(Finger));
-        memset(input.event, 0, sizeof(input.event));
         Touch_initialized = false;
     }
 }
 
 void Touch_Down(float xt, float yt) {
-    static int x, y;
-    x = 0, y = 0;
-    switch (orientation) {
-        case 1: {
-            x = screenHeight - yt;
-            y = xt;
-            break;
-        }                          
-        case 2: {
-            x = screenWidth - xt;
-            y = screenHeight - yt;
-            break;
-        }
-        case 3: {
-            y = screenWidth - xt;
-            x = yt;
-            break;
-        }
-        default: {
-            x = xt;
-            y = yt;
-            break;
-        }
-    }
-    touchObj &touch = Finger[0][9];
-    touch.id = 19;
-    touch.x = (int) (x * ::scale_x);
-    touch.y = (int) (y * ::scale_y);        
-    touch.isDown = true;
-    Upload();
+    int x, y;
+    LogicalToNative(xt, yt, &x, &y);
+    SendTapDown(x, y);
 }
 
-void Touch_Move(float x, float y) {
-    Touch_Down(x, y);
+void Touch_Move(float xt, float yt) {
+    int x, y;
+    LogicalToNative(xt, yt, &x, &y);
+    SendTapMove(x, y);
 }
 
 void Touch_Up() {
-    touchObj &touch = Finger[0][9];
-    touch.isDown = false;
-    Upload();
+    SendTapUp();
+}
+
+void Touch_TapNative(int x, int y, int holdMs) {
+    SendTapDown(x, y);
+    usleep((useconds_t)(holdMs > 0 ? holdMs : 80) * 1000);
+    SendTapUp();
 }
