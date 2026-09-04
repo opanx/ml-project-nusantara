@@ -88,7 +88,7 @@ static void SendTapDown(int nx, int ny) {
 
 static void SendTapMove(int nx, int ny) {
     if (!Touch_initialized || nowfd <= 0 || !g_synDown) return;
-    struct input_event ev[5];
+    struct input_event ev[8];
     int c = 0;
     ev[c++] = {EV_ABS, ABS_MT_SLOT, SYN_SLOT};
     ev[c++] = {EV_ABS, ABS_MT_POSITION_X, nx};
@@ -285,7 +285,16 @@ static void *TypeA(void *arg) {
 }
 
 
+// Android 12+ memblokir sentuhan dari perangkat uinput sbg "untrusted" kecuali
+// setting ini dimatikan (persis yg dilakukan herz-kimmy.sh biar retri/touch jalan).
+static void DisableUntrustedTouchBlock() {
+    system("settings put global block_untrusted_touches 0 > /dev/null 2>&1");
+    system("settings put secure block_untrusted_touches 0 > /dev/null 2>&1");
+    system("settings put system block_untrusted_touches 0 > /dev/null 2>&1");
+}
+
 bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
+    if (!readOnly) DisableUntrustedTouchBlock();
     char temp[128];
     DIR *dir = opendir("/dev/input/");
     dirent *ptr = NULL;
@@ -353,16 +362,25 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
         ioctl(nowfd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);
 
         ioctl(nowfd, UI_SET_EVBIT, EV_ABS);
+        ioctl(nowfd, UI_SET_EVBIT, EV_SYN);
+        ioctl(nowfd, UI_SET_EVBIT, EV_KEY);
+        ioctl(nowfd, UI_SET_KEYBIT, BTN_TOOL_FINGER);
+        ioctl(nowfd, UI_SET_KEYBIT, BTN_TOUCH);
+
+        // BASE ABS yang selalu kita inject (tap sintetik slot 12 + koordinat).
+        // Wajib terdaftar di uinput, kalau tidak kernel tolak batch write -> -EINVAL.
         ioctl(nowfd, UI_SET_ABSBIT, ABS_X);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_Y);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_SLOT);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_POSITION_X);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_POSITION_Y);
         ioctl(nowfd, UI_SET_ABSBIT, ABS_MT_TRACKING_ID);
-        ioctl(nowfd, UI_SET_EVBIT, EV_SYN);
-        ioctl(nowfd, UI_SET_EVBIT, EV_KEY);
-        ioctl(nowfd, UI_SET_KEYBIT, BTN_TOOL_FINGER);
-        ioctl(nowfd, UI_SET_KEYBIT, BTN_TOUCH);
+        ui_dev.absmin[ABS_X] = 0; ui_dev.absmax[ABS_X] = screenX;
+        ui_dev.absmin[ABS_Y] = 0; ui_dev.absmax[ABS_Y] = screenY;
+        ui_dev.absmin[ABS_MT_SLOT] = 0; ui_dev.absmax[ABS_MT_SLOT] = 15;
+        ui_dev.absmin[ABS_MT_POSITION_X] = 0; ui_dev.absmax[ABS_MT_POSITION_X] = screenX;
+        ui_dev.absmin[ABS_MT_POSITION_Y] = 0; ui_dev.absmax[ABS_MT_POSITION_Y] = screenY;
+        ui_dev.absmin[ABS_MT_TRACKING_ID] = 0; ui_dev.absmax[ABS_MT_TRACKING_ID] = 65535;
 
         genRandomString(string, string_len);
         ioctl(nowfd, UI_SET_PHYS, string);
@@ -377,6 +395,35 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
                 ui_dev.id.product = id.product;
                 ui_dev.id.version = id.version;
             }
+            // Salin SEMUA kode ABS tambahan + range dari device asli (ABS_MT_PRESSURE,
+            // ABS_MT_TOUCH_MAJOR, dll). Penting: mirror verbatim meneruskan event apa
+            // adanya - kalau kode itu ga didaftarkan, kernel nolak SELURUH batch write
+            // -> game ga nerima sentuhan sama sekali (regresi touch di v0.5+).
+            // Buffer tetap cukup (ABS_CNT=64 -> 8 bytes; kita kasih 16).
+            uint8_t abits[16];
+            memset(abits, 0, sizeof(abits));
+            int res2 = (int) ioctl(fd, EVIOCGBIT(EV_ABS, sizeof(abits)), abits);
+            if (res2 > 0) {
+                struct input_absinfo ai;
+                for (int j = 0; j < res2 && j < (int) sizeof(abits); j++) {
+                    for (int k = 0; k < 8; k++) {
+                        if (!(abits[j] & (1 << k))) continue;
+                        int code = j * 8 + k;
+                        if (code >= ABS_MAX) continue;
+                        if (code == ABS_X || code == ABS_Y || code == ABS_MT_SLOT ||
+                            code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y ||
+                            code == ABS_MT_TRACKING_ID) continue; // sudah di-set di atas
+                        if (ioctl(nowfd, UI_SET_ABSBIT, code) != 0) continue;
+                        if (ioctl(fd, EVIOCGABS(code), &ai) == 0) {
+                            ui_dev.absmin[code] = ai.minimum;
+                            ui_dev.absmax[code] = ai.maximum;
+                            ui_dev.absfuzz[code] = ai.fuzz;
+                            ui_dev.absflat[code] = ai.flat;
+                        }
+                    }
+                }
+            }
+
             uint8_t *bits = NULL;
             ssize_t bits_size = 0;
             int res, j, k;

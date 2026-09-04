@@ -344,12 +344,8 @@ float retriTouchY = 661;
 int retriHoldMs = 80;          // berapa lama tombol di-hold per tap
 int retriRetryMs = 2500;       // retry tap tiap X ms kalau target masih hidup
 int retriDmgBonus = 0;         // koreksi damage retri (kalau formula meleset)
-float retriMaxDist = 6.0f;     // jarak maksimum trigger
+float retriMaxDist = 10.0f;    // jarak max trigger. Posisi game diskalakan ~x81 (map 6000 -> 74), jadi range retri ~700 true ≈ 8.6 di sini
 float retriJungleMult = 1.0f;  // pengali damage utk monster (item jungle/blessing)
-
-// pending tap: antri sampe tangan bersih (biar ga tabrakan sama jari asli)
-static int g_pendingTapIdx = -1;
-static uint64_t g_pendingTapSince = 0;
 
 static uint64_t NowMs() {
     using namespace std::chrono;
@@ -491,8 +487,9 @@ void DrawMonster(ImDrawList *Draw) {
             dl->AddLine({loc_posSc.X,loc_posSc.Y}, {en_posSc.X, en_posSc.Y}, IM_COL32(255, 255, 255, 255), 1.5f);
         }
 
-        float r = IconSize * 0.45f; // radius icon
-        if (r < 18.0f) r = 18.0f;
+        // radius ikon hero ikut slider Ukuran Icon (g_ICSize) biar ga kebesaran
+        float r = g_ICSize * 0.62f;
+        if (r < 16.0f) r = 16.0f;
 
         if (iconhero) {
             ImVec2 iconPos(HeroPos.X, HeroPos.Y);
@@ -783,14 +780,15 @@ void CheckAndTriggerRetribution() {
     if (retriDmg < 0) retriDmg = 0;
     uint64_t now = NowMs();
 
-    // 1) detect: target butuh retri? kalau jari lagi nempel, antri (pending)
+    // Tap langsung via SLOT terpisah (12) - tidak perlu nunggu jari lepas,
+    // slot dedicated itu justru biar ga nyatu sama jari asli (joystick/skill).
+    // Nunggu "tangan bersih" = retri ga pernah jalan pas war (jari selalu nempel).
     for (int i = 0; i < MonsterCount; i++) {
         if (!monster[i].isValid || monster[i].isDead) {
             lastRetriTriggered[i] = false;
             continue;
         }
         if (RetriEligible(i, retriDmg)) {
-            if (g_pendingTapIdx == i) continue; // udah antri
             if (lastRetriTriggered[i]) {
                 // retri CD 30s+: boleh coba ulang kalau target masih hidup & masih bisa dibunuh
                 if (now - lastRetriTapMs[i] >= (uint64_t) retriRetryMs)
@@ -798,31 +796,10 @@ void CheckAndTriggerRetribution() {
                 else
                     continue;
             }
-            if (Touch_Busy()) {
-                // tangan lagi dipake -> antri, eksekusi pas jari lepas
-                g_pendingTapIdx = i;
-                g_pendingTapSince = now;
-            } else {
-                DoRetriTap(i, now);
-            }
-        } else {
-            lastRetriTriggered[i] = false;
-        }
-    }
-
-    // 2) eksekusi pending tap begitu tangan bersih (max tunggu 500ms biar target ga lolos)
-    if (g_pendingTapIdx >= 0 && !Touch_Busy()) {
-        int i = g_pendingTapIdx;
-        g_pendingTapIdx = -1;
-        if (RetriEligible(i, retriDmg) && now - g_pendingTapSince < 800) {
             DoRetriTap(i, now);
         } else {
             lastRetriTriggered[i] = false;
         }
-    }
-    // pending keburu basi (target lolos / jari ga pernah lepas) -> reset
-    if (g_pendingTapIdx >= 0 && now - g_pendingTapSince > 800) {
-        g_pendingTapIdx = -1;
     }
 }
 /*
@@ -1053,24 +1030,24 @@ void SectionHeader(const char* label) {
 void Layout_tick_UI() {
     ImGuiIO &io = ImGui::GetIO();
 
-    // ===== MINIMIZED: cuma pill kecil buat restore =====
+    // ===== MINIMIZED: pill kecil, teks PANXCZ + FPS sejajar =====
     if (g_menuMinimized) {
-        ImGui::SetNextWindowPos(ImVec2(abs_ScreenX / 2.0f - 95, 0), ImGuiCond_Always);
+        ImGui::SetNextWindowPos(ImVec2(abs_ScreenX / 2.0f - 70, 0), ImGuiCond_Always);
         ImGuiWindowFlags pf = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize |
                               ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoSavedSettings;
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8, 4));
         ImGui::Begin(oxorany("##minpill"), nullptr, pf);
-        if (ImGui::Button(oxorany("⚡ PANXCZ ▢"), ImVec2(190, 46))) {
+        if (ImGui::Button(oxorany("⚡ PANXCZ"), ImVec2(92, 26))) {
             g_menuMinimized = false;
         }
-        // show FPS saat minimized biar tetap bisa dipantau
-        ImGui::SetNextItemWidth(190);
-        ImGui::TextColored(ImColor(0, 255, 140, 255), "FPS: %.0f  |  %s", io.Framerate, langEN ? "EN" : "ID");
-        ImGui::TextDisabled(TR("ESP & minimap tetap jalan", "ESP & minimap tetap jalan"));
+        ImGui::SameLine();
+        ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
         // overlay tetap jalan walau menu di-minimize (draw sebelum End supaya g_window valid)
         if (MinimapIcon) DrawMinimapESP(ImGui::GetForegroundDrawList());
         DrawMonster(ImGui::GetForegroundDrawList());
         g_window = ImGui::GetCurrentWindow();
         ImGui::End();
+        ImGui::PopStyleVar();
         return;
     }
 
@@ -1091,7 +1068,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v0.6");
+    ImGui::TextDisabled("MLBB v0.7");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1192,7 +1169,7 @@ void Layout_tick_UI() {
             ImGui::SliderFloat(TR("Jungle Mult", "Pengali Jungle"), &retriJungleMult, 0.50f, 3.0f, "%.2f");
             ImGui::SliderInt(TR("Hold ms", "Tahan (ms)"), &retriHoldMs, 30, 300, "%d ms");
             ImGui::SliderInt(TR("Retry every", "Retry tiap"), &retriRetryMs, 500, 6000, "%d ms");
-            ImGui::SliderFloat(TR("Max Distance", "Jarak Max"), &retriMaxDist, 1.0f, 20.0f, "%.1f");
+            ImGui::SliderFloat(TR("Max Distance", "Jarak Max"), &retriMaxDist, 2.0f, 40.0f, "%.1f");
             ImGui::TextDisabled(TR("Auto retries every few sec while target is killable.", "Auto retry tiap beberapa detik selama target masih bisa dibunuh."));
 
             SectionHeader(TR("Target", "Target"));
@@ -1415,7 +1392,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v0.6\n");
+    printf("[+] PANXCZ MLBB v0.7\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");

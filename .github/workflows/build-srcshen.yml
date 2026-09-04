@@ -52,20 +52,26 @@ jobs:
           name: panxcz-mlbb
           path: release/
 
-      - name: Create pre-release v0.6
+      - name: Create pre-release v0.7
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.6
-          name: "Panxcz cheat mlbb v0.6 pre release"
+          tag_name: v0.7
+          name: "Panxcz cheat mlbb v0.7 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v0.6 pre release
+            ## Panxcz cheat mlbb v0.7 pre release
 
-            ### Fix v0.5 -> v0.6
+            ### FIX AKAR MASALAH — TOUCH & AUTO RETRI SEKARANG BENERAN JALAN
+            - **`block_untrusted_touches 0` (global + secure + system) di-set otomatis saat start** — persis yg dilakukan herz-kimmy.sh. Android 12+ (AOSP 16) memblokir sentuhan dari perangkat uinput sebagai "untrusted" kalau setting ini nyala → **ini biang keladi "touch ga bisa sama sekali"** di semua versi sebelumnya. Sekarang event uinput (jari asli yg di-mirror + tap sintetik retri) diterima sistem.
+            - **uinput device sekarang mendaftarkan SEMUA kode ABS** (ABS_MT_PRESSURE, ABS_MT_TOUCH_MAJOR, dll) + range dari device asli. Sebelumnya mirror verbatim mengirim kode yg tidak terdaftar → kernel menolak **SELURUH batch write** → game tidak menerima sentuhan sama sekali (regresi sejak v0.5).
+            - **Range ABS_MT_SLOT dipaksa 0..15** supaya tap sintetik di slot 12 tidak di-clamp/merge dengan jari asli.
+            - **Tap retri langsung dieksekusi** (tidak lagi menunggu "tangan bersih") — slot 12 dedicated justru ada supaya aman nge-tap pas war. Nunggu jari lepas = retri ga pernah jalan saat teamfight.
+            - **Pill minimize dikecilkan**: tombol ⚡ PANXCZ (92x26) + FPS sejajar — tidak lagi kotak gede 190x46.
+            - **Icon hero ESP diperkecil** & ikut slider Ukuran Icon (g_ICSize) biar ga kebesaran.
+
+            ### Fix v0.5 -> v0.6 (sebelumnya)
             - **Damage retri formula diganti ke rumus resmi MLBB**: `750 + 150 x level` (Lv1=900, Lv4=1350, Lv5=1500 dst) - bukan rumus lama 600+(lvl-1)x80
-            - **Auto Retri nunggu tangan bersih dulu baru tap**: cheat deteksi target yg butuh retri -> kalau jari asli masih nempel di layar (joystick/dll), tap DIANTRI & dieksekusi pas jari lepas (max 800ms). Tap sintetik ga pernah tabrakan sama sentuhan asli lagi
             - **Slider Jungle Mult** (default 1.00) buat damage ke monster kena bonus item jungle/blessing + Dmg Bonus tetap ada. Info live nunjukin damage sesuai rumus baru
-            - Tap sintetik lengkap dgn BTN_TOOL_FINGER down/up biar state sentuhan bersih di device
             - Semua setting baru ikut ke-save otomatis (autosave config)
 
             - **Auto Retri tap sekarang di slot sentuh TERPISAH (slot 12)** - sebelumnya tap sintetik digabung ke slot 0, jadi pas jempol kiri pegang joystick, tap retri nyatu sama sentuhan joystick -> kaya nyentuh tombol lain / joystick gerak sendiri / retri ga kepencet. Sekarang tap retri jalan di slot sendiri, gak ganggu jari asli
