@@ -1679,7 +1679,7 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         // BattleManager ada (loading screen / awal match), ga perlu buka tab dulu
         if ((++roomTick % 200) == 0) RefreshRoomInfo();
         if (g_touchDebugLog && (++dbgTick % 1500) == 0)
-            printf("[DBG] touch ok=%d fd=%d dev=\"%s\" tap=%lldB mirror=%lldB err=%d | BM=0x%llx players B%d R%d monsters=%d retri=%d camp=%d\n",
+            printf("[DBG] touch ok=%d fd=%d dev=[%s] tap=%lldB mirror=%lldB err=%d | BM=0x%llx players B%d R%d monsters=%d retri=%d camp=%d\n",
                    g_touchInitOk, g_touchFdCount, g_touchDevName[0] ? g_touchDevName : "?",
                    (long long) g_touchTapBytes, (long long) g_touchMirrorBytes, g_touchLastErr,
                    (unsigned long long) g_roomBM, g_roomBlueN, g_roomRedN, MonsterCount,

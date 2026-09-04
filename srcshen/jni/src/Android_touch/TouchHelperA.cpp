@@ -516,7 +516,7 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
 
     g_touchInitOk = 1;
     g_touchFdCount = fdNum;
-    printf("[TOUCH] init OK: %d device grabbed ("%s"), uinput fd=%d, screen %dx%d\n",
+    printf("[TOUCH] init OK: %d device grabbed [%s], uinput fd=%d, screen %dx%d\n",
            fdNum, g_touchDevName[0] ? g_touchDevName : "?", nowfd, screenX, screenY);
     system("chmod 000 -R /proc/bus/input/*");
     return true;
