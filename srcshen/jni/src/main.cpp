@@ -93,7 +93,9 @@ extern void Touch_TapNative(int x, int y, int holdMs);
 extern bool Touch_Busy();
 
 // i18n: EN / 中文
-#define TR(en, cn) (langEN ? (en) : (cn))std::string fshy(uintptr_t address)
+#define TR(en, cn) (langEN ? (en) : (cn))
+
+std::string fshy(uintptr_t address)
 {
     if (!address) return "";
 
