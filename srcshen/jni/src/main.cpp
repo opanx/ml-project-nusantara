@@ -66,6 +66,7 @@ bool drawMDistance = true;
 bool drawMName = true;
 bool drawAlertUnderAttack = true;
 bool iconhero = true;
+int g_ICSize = 38;        // slider ukuran icon hero (dipakai DrawMonster di atas deklarasi baris ini)
 bool drawMHealthBar = true;
 bool drawMMpBar = false;
 bool drawMSkillCD = false;
@@ -865,7 +866,6 @@ float g_Res0_MultX = 1.0f;
 float g_Res0_MultY = 1.0f;
 float g_Res1_OffsetX = 0.0f;
 float g_Res1_OffsetY = 0.0f;
-int g_ICSize = 38;
 
 // Minimap harus pakai bidang horizontal (X & Z dunia), BUKAN sumbu vertikal (Y-up).
 // Sebelumnya HeroPosition.Z itu isinya worldY (atas/bawah) -> ikon melompat-lompat
