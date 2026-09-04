@@ -52,42 +52,51 @@ jobs:
           name: panxcz-mlbb
           path: release/
 
-      - name: Create pre-release v0.9
+      - name: Create pre-release v1.0
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.9
-          name: "Panxcz cheat mlbb v0.9 pre release"
+          tag_name: v1.0
+          name: "Panxcz cheat mlbb v1.0 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v0.9 pre release
+            ## Panxcz cheat mlbb v1.0 pre release
 
-            ### TOOL DEBUG TOUCH + AUTO-RETRI (biar langsung ketahuan gagalnya di mana)
+            ### UNIVERSAL — SUPPORT ALL HP + ALL ROM (v1.0)
+            - **Fix crash `Touch_Init` di ROM lain**: sebelumnya `opendir("/dev/input/")` TANPA NULL-check → kalau `/dev/input` ga bisa diakses (SELinux / layout ROM beda) langsung SEGFAULT → tool mati total di HP temen. Sekarang NULL-safe + scan via direktori asli (bukan asumsi event0..N).
+            - **Fallback discovery device sentuh via `/proc/bus/input/devices`**: kalau `/dev/input` ga kebaca, parse `/proc/bus/input/devices` buat nemu node event sentuh yg bener — works di ROM yg penomoran event-nya beda / nyembunyiin /dev/input.
+            - **uinput dibuat DULU, baru grab device asli**: sebelumnya device di-grab SEBELUM uinput dibuat → kalau `/dev/uinput` gagal, layar sentuh HP ikut MATI TOTAL (game ga bisa disentuh). Sekarang kalau uinput gagal: device asli TIDAK di-grab, game tetap normal, fitur tap sintetik nonaktif + pesan errno jelas.
+            - **Log kegagalan jelas**: tiap gagal (device ga ketemu / uinput ga bisa) ada print `[TOUCH] FAILED: ...` dengan errno — ga ada lagi kegagalan senyap.
+
+            ### FIX AUTO-RETRI GA PERNAH KEPENCET (v1.0)
+            - **`retriMaxDist` salah skala → fix ke 700 unit dunia asli**: sebelumnya 10.0 (hasil analisis skala minimap yg salah) → retri cuma trigger kalau monster jaraknya <10 unit dunia (nempel banget) = GA PERNAH kepencet. Range retri MLBB asli = 700 unit dunia, sekarang default 700 + slider 50–1500 + **info jarak monster terdekat live** di UI biar bisa diverifikasi.
+
+            ### TOOL DEBUG TOUCH + AUTO-RETRI (v0.9)
             - **Tombol "Test Tap"** di tab Auto Retri: tap 1x di titik retri yg dikalibrasi TANPA perlu nunggu monster. Kalau ini bikin game kepencet → injeksi jalan, masalahnya cuma di deteksi monster. Kalau ga kepencet → masalah di injeksi (errno tampil di layar).
-            - **Status Touch live** di tab Auto Retri: Touch OK/FAILED, nama device yg di-grab, jumlah tap-batch & mirror-batch yg berhasil ditulis ke uinput + errno kalau sistem nolak (mis. EACCES/EINVAL = masih ke-filter Android).
-            - **Verbose log**: tiap tap ada print `[TOUCH] tap DOWN/UP (x,y) fd bytes errno` + `[RETRI] auto-tap target#...` + baris `[DBG]` tiap ~1.5 detik (BM, players, monsters, camp) → tinggal paste log-nya ke sini buat fix lanjutan.
-            - **Room Info di-refresh otomatis tiap ~200ms** (sebelumnya cuma pas tab kebuka) → data player langsung muncul begitu BattleManager ada (loading screen / awal match), minimap & overlay juga kepanas duluan.
-            - Catatan jujur: data draft/pick (fase pick-ban) ada di class proto Room server yang nggak punya instance native terbaca — jadi Room Info muncul mulai **loading screen** (saat ShowPlayer/BM aktif), bukan pas masih layar pick. Ini batasan semua tool ELF tanpa hook tambahan.
+            - **Status Touch live**: Touch OK/FAILED, nama device yg di-grab, jumlah tap-batch & mirror-batch yg berhasil ditulis ke uinput + errno kalau sistem nolak.
+            - **Verbose log**: tiap tap ada print `[TOUCH] tap DOWN/UP (x,y) fd bytes errno` + `[RETRI] auto-tap target#...` + baris `[DBG]` tiap ~1.5 detik (BM, players, monsters, camp).
+            - **Room Info di-refresh otomatis tiap ~200ms** → data player langsung muncul begitu BattleManager ada (loading screen / awal match).
 
             ### FITUR BARU — ROOM / PLAYER INFO + DEBUG (v0.8)
-            - **Tab Info & Debug**: daftar player live (Biru/sekutu & Merah/musuh) — setiap pemain nunjukin **Hero** (m_HeroName 0x8d0), **Battle Spell** (m_iSummonSkillId 0x95c → Retribution/Execute/Flicker dll), **Rank** (m_uiRankLevel 0x90c + defence 0x910), **Level**, **KDA** (0x9e0/0x9e8/0x9e4), **Gold** (0xa24), **Team name** (0x8f8), **jarak** dari lo, dan penanda `>>` buat diri sendiri. Pemisahan tim pakai `m_EntityCampType` (0xd0).
-            - **Info Saya**: hero, level, KDA, posisi X/Y/Z sendiri.
-            - **Debug overlay** (toggle, kiri atas): PID, libbase, alamat BattleManager, jumlah player per tim + monster, FPS, camp, status Safe Mode. Overlay ini juga tampil pas menu di-minimize.
-            - **Semua offset diverifikasi dari dump 22.1.97.12061** (dump menyertakan offset field; cocok dgn offset yg udah dipakai ESP aktif).
+            - **Tab Info & Debug**: daftar player live (Biru/sekutu & Merah/musuh) — Hero, Battle Spell, Rank, Level, KDA, Gold, Team name, jarak, penanda `>>` buat diri sendiri. Pemisahan tim pakai `m_EntityCampType` (0xd0).
+            - **Debug overlay** (toggle, kiri atas): PID, libbase, BattleManager, jumlah player per tim + monster, FPS, camp, status Safe Mode — tampil juga pas menu di-minimize.
             - Fix buffer overflow `SendTapMove` (ev[5] nulis 6 event → ev[8]).
 
             ### FIX AKAR MASALAH — TOUCH & AUTO RETRI (v0.7)
-            - **`block_untrusted_touches 0` (global + secure + system) di-set otomatis saat start** — persis yg dilakukan herz-kimmy.sh. Android 12+ (AOSP 16) memblokir sentuhan dari perangkat uinput sebagai "untrusted" kalau setting ini nyala → **ini biang keladi "touch ga bisa sama sekali"** di semua versi sebelumnya. Sekarang event uinput (jari asli yg di-mirror + tap sintetik retri) diterima sistem.
-            - **uinput device sekarang mendaftarkan SEMUA kode ABS** (ABS_MT_PRESSURE, ABS_MT_TOUCH_MAJOR, dll) + range dari device asli. Sebelumnya mirror verbatim mengirim kode yg tidak terdaftar → kernel menolak **SELURUH batch write** → game tidak menerima sentuhan sama sekali (regresi sejak v0.5).
-            - **Range ABS_MT_SLOT dipaksa 0..15** supaya tap sintetik di slot 12 tidak di-clamp/merge dengan jari asli.
-            - **Tap retri langsung dieksekusi** (tidak lagi menunggu "tangan bersih") — slot 12 dedicated justru ada supaya aman nge-tap pas war. Nunggu jari lepas = retri ga pernah jalan saat teamfight.
-            - **Pill minimize dikecilkan**: tombol ⚡ PANXCZ (92x26) + FPS sejajar — tidak lagi kotak gede 190x46.
-            - **Icon hero ESP diperkecil** & ikut slider Ukuran Icon (g_ICSize) biar ga kebesaran.
-            - **`block_untrusted_touches 0` (global + secure + system) di-set otomatis saat start** — persis yg dilakukan herz-kimmy.sh. Android 12+ (AOSP 16) memblokir sentuhan dari perangkat uinput sebagai "untrusted" kalau setting ini nyala → **ini biang keladi "touch ga bisa sama sekali"** di semua versi sebelumnya. Sekarang event uinput (jari asli yg di-mirror + tap sintetik retri) diterima sistem.
-            - **uinput device sekarang mendaftarkan SEMUA kode ABS** (ABS_MT_PRESSURE, ABS_MT_TOUCH_MAJOR, dll) + range dari device asli. Sebelumnya mirror verbatim mengirim kode yg tidak terdaftar → kernel menolak **SELURUH batch write** → game tidak menerima sentuhan sama sekali (regresi sejak v0.5).
-            - **Range ABS_MT_SLOT dipaksa 0..15** supaya tap sintetik di slot 12 tidak di-clamp/merge dengan jari asli.
-            - **Tap retri langsung dieksekusi** (tidak lagi menunggu "tangan bersih") — slot 12 dedicated justru ada supaya aman nge-tap pas war. Nunggu jari lepas = retri ga pernah jalan saat teamfight.
-            - **Pill minimize dikecilkan**: tombol ⚡ PANXCZ (92x26) + FPS sejajar — tidak lagi kotak gede 190x46.
-            - **Icon hero ESP diperkecil** & ikut slider Ukuran Icon (g_ICSize) biar ga kebesaran.
+            - **`block_untrusted_touches 0` di-set otomatis saat start** — Android 12+ (AOSP 16) memblokir sentuhan uinput sebagai "untrusted" → ini biang keladi "touch ga bisa sama sekali".
+            - **uinput device mendaftarkan SEMUA kode ABS** + range dari device asli (sebelumnya kernel nolak batch write karena kode ABS ga terdaftar).
+            - **Range ABS_MT_SLOT dipaksa 0..15** supaya tap sintetik slot 12 tidak di-clamp/merge dengan jari asli.
+            - **Tap retri langsung dieksekusi** via slot 12 dedicated (tidak nunggu "tangan bersih" — nunggu = ga pernah jalan pas war).
+
+            ### File
+            | File | Type | Keterangan |
+            |------|------|------------|
+            | `panxcz_mlbb` | ELF executable (arm64) | Cheat MLBB (ESP + Auto Retri + Minimap + Drone View + Room Info) |
+            | `dump_22.1.97.12061.cs` | Dump reference | Offsets & kelas untuk update berikutnya |
+
+            ### Cara Pakai (MT Manager / Terminal root)
+            ```bash
+            su -c "chmod 755 /data/local/tmp/panxcz_mlbb && /data/local/tmp/panxcz_mlbb"
+            ```
 
             ### Fix v0.5 -> v0.6 (sebelumnya)
             - **Damage retri formula diganti ke rumus resmi MLBB**: `750 + 150 x level` (Lv1=900, Lv4=1350, Lv5=1500 dst) - bukan rumus lama 600+(lvl-1)x80

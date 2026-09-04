@@ -354,12 +354,12 @@ bool AutoRetributionTurtle = false;
 bool AutoRetributionCrab = false;
 bool AutoRetributionLito = false;        
 
-float retriTouchX = 1575;
-float retriTouchY = 661;
+float retriTouchX = -1;   // -1 = belum di-set; di-set proporsional ke layar di main() (support semua resolusi)
+float retriTouchY = -1;
 int retriHoldMs = 80;          // berapa lama tombol di-hold per tap
 int retriRetryMs = 2500;       // retry tap tiap X ms kalau target masih hidup
 int retriDmgBonus = 0;         // koreksi damage retri (kalau formula meleset)
-float retriMaxDist = 10.0f;    // jarak max trigger. Posisi game diskalakan ~x81 (map 6000 -> 74), jadi range retri ~700 true ≈ 8.6 di sini
+float retriMaxDist = 700.0f;   // jarak max trigger dlm unit DUNIA asli (range retri MLBB = 700). Jangan pakai skala minimap!
 float retriJungleMult = 1.0f;  // pengali damage utk monster (item jungle/blessing)
 
 static uint64_t NowMs() {
@@ -1354,7 +1354,18 @@ void Layout_tick_UI() {
             ImGui::SliderFloat(TR("Jungle Mult", "Pengali Jungle"), &retriJungleMult, 0.50f, 3.0f, "%.2f");
             ImGui::SliderInt(TR("Hold ms", "Tahan (ms)"), &retriHoldMs, 30, 300, "%d ms");
             ImGui::SliderInt(TR("Retry every", "Retry tiap"), &retriRetryMs, 500, 6000, "%d ms");
-            ImGui::SliderFloat(TR("Max Distance", "Jarak Max"), &retriMaxDist, 2.0f, 40.0f, "%.1f");
+            ImGui::SliderFloat(TR("Max Distance", "Jarak Max"), &retriMaxDist, 50.0f, 1500.0f, "%.0f");
+            ImGui::TextDisabled(TR("Retri range MLBB = 700 units. Jarak monster saat ini:", "Range retri MLBB = 700 unit. Jarak monster terdekat:"));
+            {
+                float nearDist = 99999.0f;
+                for (int t = 0; t < MonsterCount; t++)
+                    if (monster[t].isValid && !monster[t].isDead && monster[t].distance < nearDist)
+                        nearDist = monster[t].distance;
+                if (nearDist < 99999.0f)
+                    ImGui::Text(TR("Nearest monster: %.0f units", "Monster terdekat: %.0f unit"), nearDist);
+                else
+                    ImGui::TextDisabled(TR("No monster detected", "Belum ada monster terdeteksi"));
+            }
             ImGui::TextDisabled(TR("Auto retries every few sec while target is killable.", "Auto retry tiap beberapa detik selama target masih bisa dibunuh."));
 
             SectionHeader(TR("Target", "Target"));
@@ -1627,7 +1638,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v0.9\n");
+    printf("[+] PANXCZ MLBB v1.0\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -1655,6 +1666,14 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     // NOTE: y harus dimensi MIN, bukan max (dulu salah -> surface lebih tinggi dari layar)
     ::native_window_screen_y = (displayInfo.height < displayInfo.width ? displayInfo.height : displayInfo.width);
     printf("[+] Screen: %dx%d\n", abs_ScreenX, abs_ScreenY);
+    // Posisi default tombol retri: proporsional ke layar (support semua resolusi/HP).
+    // Kalau user pernah Set Dot / punya cfg, LoadCfg() nanti menimpa dgn nilai tersimpan.
+    // Posisi tombol retri MLBB kira-kira 64% lebar & 61% tinggi (dari kalibrasi 2460x1080).
+    if (retriTouchX < 0 || retriTouchY < 0) {
+        retriTouchX = abs_ScreenX * 0.64f;
+        retriTouchY = abs_ScreenY * 0.61f;
+        printf("[+] Retri dot default (proporsional): (%.0f, %.0f) - Set Dot utk presisi\n", retriTouchX, retriTouchY);
+    }
     if (!initGUI_draw(native_window_screen_x, native_window_screen_y, true)) {
         return -1;
     }

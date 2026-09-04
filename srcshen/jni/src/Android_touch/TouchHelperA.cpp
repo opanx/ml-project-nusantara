@@ -317,23 +317,86 @@ static void DisableUntrustedTouchBlock() {
     system("settings put system block_untrusted_touches 0 > /dev/null 2>&1");
 }
 
+// ===== Discovery universal device sentuh =====
+// 1) scan /dev/input/event* (standar). 2) fallback parse /proc/bus/input/devices
+// (beberapa ROM/SELinux sembunyikan /dev/input atau penomoran event beda).
+// Return: jumlah path event ditemukan (max maxE), isi evpath[] dgn "/dev/input/eventN".
+static int DiscoverTouchDevices(char evpath[maxE][64]) {
+    int found = 0;
+    // --- cara 1: /dev/input/event* ---
+    DIR *dir = opendir("/dev/input/");
+    if (dir) {
+        dirent *ptr;
+        while ((ptr = readdir(dir)) != NULL && found < maxE) {
+            if (strncmp(ptr->d_name, "event", 5) != 0) continue;
+            char *end;
+            long num = strtol(ptr->d_name + 5, &end, 10);
+            if (end == ptr->d_name + 5 || *end != '\0') continue; // eventX aja, skip yg aneh
+            if (num < 0 || num > 4096) continue;
+            snprintf(evpath[found], 64, "/dev/input/event%ld", num);
+            found++;
+        }
+        closedir(dir);
+    } else {
+        printf("[TOUCH] /dev/input/ ga bisa dibuka, coba /proc/bus/input/devices...\n");
+    }
+    // --- cara 2: fallback /proc/bus/input/devices ---
+    if (found == 0) {
+        FILE *fp = fopen("/proc/bus/input/devices", "r");
+        if (fp) {
+            char line[512];
+            char handlers[512] = "";
+            bool hasAbsMT = false;
+            while (fgets(line, sizeof(line), fp)) {
+                if (line[0] == 'I' || line[0] == 'N' || line[0] == 'P' ||
+                    line[0] == 'S' || line[0] == 'U' || line[0] == 'B') {
+                    if (strncmp(line, "H: Handlers", 11) == 0) {
+                        snprintf(handlers, sizeof(handlers), "%s", line + 12);
+                    } else if (strncmp(line, "B: ABS", 6) == 0) {
+                        // bit ABS_MT_POSITION_X (0x35) & ABS_MT_POSITION_Y (0x36)
+                        if (strstr(line, "35000000") || strstr(line, "3f000000") ||
+                            strstr(line, "3f") || strstr(line, "ffffffff"))
+                            hasAbsMT = true;
+                    }
+                } else if (line[0] == '\n' || line[0] == '\r' || line[0] == 0) {
+                    // akhir blok device: cek punya eventN + abs-mt
+                    if (hasAbsMT && handlers[0]) {
+                        char *tok = strtok(handlers, " ");
+                        while (tok && found < maxE) {
+                            if (strncmp(tok, "event", 5) == 0) {
+                                char *end;
+                                long num = strtol(tok + 5, &end, 10);
+                                if (end != tok + 5 && *end == '\0' && num >= 0 && num <= 4096) {
+                                    snprintf(evpath[found], 64, "/dev/input/event%ld", num);
+                                    found++;
+                                }
+                            }
+                            tok = strtok(NULL, " ");
+                        }
+                    }
+                    handlers[0] = '\0';
+                    hasAbsMT = false;
+                }
+            }
+            fclose(fp);
+        } else {
+            printf("[TOUCH] /proc/bus/input/devices juga ga bisa dibaca\n");
+        }
+    }
+    return found;
+}
+
 bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
     if (!readOnly) DisableUntrustedTouchBlock();
-    char temp[128];
-    DIR *dir = opendir("/dev/input/");
-    dirent *ptr = NULL;
-    int eventCount = 0;
-    while ((ptr = readdir(dir)) != NULL) {
-        if (strstr(ptr->d_name, "event"))
-            eventCount++;
-    }
-    struct input_absinfo abs, absX[maxE], absY[maxE];
+    char evpath[maxE][64];
+    int evCount = DiscoverTouchDevices(evpath);
+    struct input_absinfo absX[maxE], absY[maxE];
     int fd, i, tmp1, tmp2;
-    int screenX, screenY, minCnt = eventCount + 1;
+    int screenX = 0, screenY = 0;
     fdNum = 0;
-    for (i = 0; i <= eventCount; i++) {
-        sprintf(temp, "/dev/input/event%d", i);
-        fd = open(temp, O_RDWR);
+    // ===== FASE 1: cari & buka device sentuh (BELUM di-grab) =====
+    for (i = 0; i < evCount && fdNum < maxE; i++) {
+        fd = open(evpath[i], O_RDWR);
         if (fd < 0) {
             continue;
         }
@@ -345,34 +408,37 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
                     char nm[64] = "";
                     if (ioctl(fd, EVIOCGNAME(sizeof(nm) - 1), nm) >= 0)
                         strncpy(g_touchDevName, nm, sizeof(g_touchDevName) - 1);
+                    screenX = absX[0].maximum;
+                    screenY = absY[0].maximum;
                 }
                 origfd[fdNum] = fd;
-                if (!readOnly) {
-                    ioctl(fd, EVIOCGRAB, GRAB);
-                }
-                if (i < minCnt) {
-                    screenX = absX[fdNum].maximum;
-                    screenY = absY[fdNum].maximum;
-                    minCnt = i;
-                }
                 fdNum++;
-                if (fdNum >= maxE)
-                    break;
+            } else {
+                close(fd);
             }
         } else {
             close(fd);
         }
     }
 
-    if (minCnt > eventCount) {
-        puts("Failed init touch!");
+    if (fdNum <= 0) {
+        printf("[TOUCH] FAILED: tidak ada device sentuh ditemukan (%d event node)\n", evCount);
         return false;
     }
 
+    // ===== FASE 2: buat uinput DULU (baru grab device asli) =====
+    // Kalau uinput gagal -> device asli TIDAK di-grab -> game tetap bisa disentuh.
     if (!readOnly) {
         struct uinput_user_dev ui_dev;
+        memset(&ui_dev, 0, sizeof(ui_dev));
         nowfd = open("/dev/uinput", O_WRONLY | O_NONBLOCK);
         if (nowfd <= 0) {
+            printf("[TOUCH] FAILED: /dev/uinput ga bisa dibuka (errno=%d). Touch asli TIDAK di-grab, game tetap normal. Fitur tap sintetik nonaktif.\n", errno);
+            for (i = 0; i < fdNum; i++) {
+                close(origfd[i]);
+                origfd[i] = 0;
+            }
+            fdNum = 0;
             return false;
         }
 
@@ -414,9 +480,9 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
         genRandomString(string, string_len);
         ioctl(nowfd, UI_SET_PHYS, string);
 
-        sprintf(temp, "/dev/input/event%d", minCnt);
-        fd = open(temp, O_RDWR);
-        if (fd) {
+        // salin id + abs/key bits dari device sentuh asli (pakai fd yg sudah terbuka)
+        fd = origfd[0];
+        if (fd > 0) {
             struct input_id id;
             if (!ioctl(fd, EVIOCGID, &id)) {
                 ui_dev.id.bustype = id.bustype;
@@ -489,6 +555,12 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
 
         if (ioctl(nowfd, UI_DEV_CREATE)) {
             return false;
+        }
+    }
+    // ===== FASE 3: grab device asli + start thread mirror =====
+    if (!readOnly) {
+        for (i = 0; i < fdNum; i++) {
+            ioctl(origfd[i], EVIOCGRAB, GRAB);
         }
     }
     Touch_initialized = true;
