@@ -221,7 +221,21 @@ void ApplyDroneView() {
 
 // skill CD musuh: ShowCoolDownComp(ShowEntity+0xf8) -> _dicCD(0x18) Dictionary<Int32,CoolDownData>
 // slotReady[]: 3 slot (S1, S2, ULT) — true kalau ready; slotCd[]: sisa detik
-// mapping: spellID % 3 = urutan (kasar: game pakai ID berurut), fallback: sort by spellID
+//
+// Catatan penting: uiStartTime/uiCoolTime itu JAM INTERNAL GAME (ms sejak battle start),
+// BUKAN epoch wall-clock. Kalau dihitung pakai time()*1000, elapsed selalu raksasa ->
+// sisa selalu 0 -> dot selalu "ready" -> CD keliatan mati. Jadi dipakai anchor wall-clock
+// (steady_clock) per (entity, spellID, startTime): entry dictionary muncul pas skill dipake
+// (AddCD), jadi anchor = pertama kali kita lihat entry -> countdown mundur akurat.
+struct CdAnchor { uintptr_t entity; int spell; uint32_t start; uint64_t wallMs; };
+static CdAnchor g_cdAnchor[64];
+static int g_cdAnchorN = 0;
+
+static uint64_t cdWallMs() {
+    auto now = std::chrono::steady_clock::now().time_since_epoch();
+    return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
 void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
     for (int i = 0; i < 3; i++) { slotReady[i] = true; slotCd[i] = 0; }
     auto comp = Read<uintptr_t>(entity + 0xf8); // m_ShowCoolDownComp
@@ -239,6 +253,8 @@ void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
     uintptr_t base = entries + 0x20;
     const int stride = 0x18;
 
+    uint64_t nowMs = cdWallMs();
+
     int ids[16];
     int cds[16];
     int n = 0;
@@ -247,19 +263,45 @@ void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
         int spellID = Read<int>(e + 8);
         auto cd = Read<uintptr_t>(e + 0x10);
         if (!spellID || !cd) continue;
-        bool cooling = Read<bool>(cd + 0x20);           // m_isCoolDown
-        uint32_t remain = 0;
-        if (cooling) {
-            uint32_t coolTime = Read<uint32_t>(cd + 0x14);  // uiCoolTime
-            uint32_t startTime = Read<uint32_t>(cd + 0x1c); // uiStartTime
-            uint32_t now = (uint32_t)time(nullptr) * 1000;
-            if (coolTime > 0 && startTime > 0) {
-                uint32_t elapsed = now - startTime;
-                remain = (elapsed >= coolTime) ? 0 : (coolTime - elapsed) / 1000;
-            }
+
+        uint32_t coolTime = Read<uint32_t>(cd + 0x14);  // uiCoolTime (ms)
+        uint32_t startTime = Read<uint32_t>(cd + 0x1c); // uiStartTime (jam internal game)
+        bool coolingFlag = Read<bool>(cd + 0x20);       // m_isCoolDown
+
+        // Entry ada di _dicCD = skill lagi CD. Kalau coolTime tidak valid, skip.
+        if (coolTime == 0) continue;
+
+        // cari/daftarkan anchor untuk (entity, spellID, startTime)
+        int ai = -1;
+        for (int a = 0; a < g_cdAnchorN; a++) {
+            if (g_cdAnchor[a].entity == entity && g_cdAnchor[a].spell == spellID &&
+                g_cdAnchor[a].start == startTime) { ai = a; break; }
         }
+        if (ai < 0) {
+            if (g_cdAnchorN < 64) ai = g_cdAnchorN++;
+            else {
+                // evict entry tertua
+                uint64_t oldest = g_cdAnchor[0].wallMs; ai = 0;
+                for (int a = 1; a < 64; a++) if (g_cdAnchor[a].wallMs < oldest) { oldest = g_cdAnchor[a].wallMs; ai = a; }
+            }
+            g_cdAnchor[ai].entity = entity;
+            g_cdAnchor[ai].spell = spellID;
+            g_cdAnchor[ai].start = startTime;
+            g_cdAnchor[ai].wallMs = nowMs;
+        }
+
+        uint64_t elapsedMs = nowMs - g_cdAnchor[ai].wallMs;
+        uint32_t remain = (elapsedMs >= coolTime) ? 0 : (uint32_t)(coolTime - elapsedMs);
+        // fallback: kalau flag cooling masih nyala, minimal merah walau sisa belum akurat
+        if (remain == 0 && coolingFlag) remain = coolTime;
+        if (remain == 0) {
+            // anchor kedaluwarsa / salah deteksi — coba pakai uiStartTime relative ke battle?
+            // Kita tidak tahu jam game; flag cooling = sumber kebenaran state.
+            if (coolingFlag) remain = (coolTime > 1000) ? coolTime / 1000 : 1;
+        }
+
         ids[n] = spellID;
-        cds[n] = (int)remain;
+        cds[n] = (int)((remain + 999) / 1000); // pembulatan ke atas biar ga 0 pas masih CD
         n++;
     }
     if (n == 0) return;
@@ -1236,7 +1278,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v0.9");
+    ImGui::TextDisabled("MLBB v1.1");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1638,7 +1680,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.0\n");
+    printf("[+] PANXCZ MLBB v1.1\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");

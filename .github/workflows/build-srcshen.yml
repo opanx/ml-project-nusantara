@@ -55,11 +55,17 @@ jobs:
       - name: Create pre-release v1.0
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0
-          name: "Panxcz cheat mlbb v1.0 pre release"
+          tag_name: v1.1
+          name: "Panxcz cheat mlbb v1.1 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v1.0 pre release
+            ## Panxcz cheat mlbb v1.1 pre release
+
+            ### HOTFIX — SKILL CD GA KELIATAN (v1.1)
+            - **Akar masalah**: sisa CD dihitung pakai `time(nullptr)*1000` (epoch wall-clock ~1.7 triliun) padahal `uiStartTime/uiCoolTime` itu **jam internal battle** (nilai kecil). `elapsed = now - startTime` selalu raksasa → sisa selalu 0 → dot selalu hijau "ready" walau skill lagi CD → keliatan mati utk semua hero.
+            - **Fix**: anchor wall-clock (`steady_clock`) per (entity, spellID, startTime). Entry dictionary muncul pas skill dipake (AddCD), jadi pertama kali lihat entry = awal CD → countdown mundur akurat. Fallback: kalau flag `m_isCoolDown` masih nyala tapi sisa 0, dot tetap merah.
+
+            ### UNIVERSAL — SUPPORT ALL HP + ALL ROM (v1.0)
 
             ### UNIVERSAL — SUPPORT ALL HP + ALL ROM (v1.0)
             - **Fix crash `Touch_Init` di ROM lain**: sebelumnya `opendir("/dev/input/")` TANPA NULL-check → kalau `/dev/input` ga bisa diakses (SELinux / layout ROM beda) langsung SEGFAULT → tool mati total di HP temen. Sekarang NULL-safe + scan via direktori asli (bukan asumsi event0..N).
