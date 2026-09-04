@@ -465,6 +465,8 @@ void DrawMonster(ImDrawList *Draw) {
 
     long player = getPtr641(getPtr641(a32+OFF_SHOW_PLAYERS)+0x10)+0x20;
     uint stop_player = Read<uint>(getPtr641(a32+OFF_SHOW_PLAYERS)+0x18);
+    // clamp: match normal 5v5 = 10 player (+AI/brawl/custom). Kalau count sampah, jangan loop gila-gilaan.
+    if (stop_player > 64) stop_player = 64;
     
     for (int i = 0; i < stop_player; i++) {
         auto Objaddr = getPtr641(player + ((i << 3) / 1));
@@ -496,10 +498,10 @@ void DrawMonster(ImDrawList *Draw) {
             continue;
         }
 
-        Vector3 Z;
+        Vector3 Z = {0,0,0};
         vm_readv(selfp + OFF_ENTITY_POSITION, &Z, sizeof(Z));
       
-        Vector3 D;
+        Vector3 D = {0,0,0};
         vm_readv(Objaddr + OFF_ENTITY_POSITION, &D, sizeof(D));
         
         Vector2 en_posSc;
@@ -579,6 +581,7 @@ void DrawMonster(ImDrawList *Draw) {
     }
     long monster = getPtr641(getPtr641(a32+OFF_SHOW_MONSTERS)+0x10)+0x20;
     uint stop_monster = Read<uint>(getPtr641(a32+OFF_SHOW_MONSTERS)+0x18);
+    if (stop_monster > 128) stop_monster = 128;  // clamp anti count sampah
     
     for (int i = 0; i < stop_monster; i++) {
         auto Objaddr = getPtr641(monster + ((i << 3) / 1));
@@ -612,10 +615,10 @@ void DrawMonster(ImDrawList *Draw) {
             continue;
         }     
         
-        Vector3 ZL;
+        Vector3 ZL = {0,0,0};
         vm_readv(selfp + OFF_ENTITY_POSITION, &ZL, sizeof(ZL));
       
-        Vector3 Dm;
+        Vector3 Dm = {0,0,0};
         vm_readv(Objaddr + OFF_ENTITY_POSITION, &Dm, sizeof(Dm));
         
         Vector2 mon_posSc;
@@ -858,7 +861,9 @@ void RoomInfoList() {
     if (!playersListPtr) return;
     long playersList = getPtr641(playersListPtr + 0x10);
     int playerCount = Read<int>(playersListPtr + 0x18);
-    if (playerCount <= 0 || !playersList) return;
+    // clamp: player list match max 10 (+AI/custom bisa lebih), jangan sampai loop gila2an
+    if (playerCount <= 0 || playerCount > 64) return;
+    if (!playersList) return;
 
     uint32_t myTeamCamp = Read<uint32_t>(selfp + OFF_ENTITY_CAMP);
 
@@ -869,8 +874,14 @@ void RoomInfoList() {
         long obj = getPtr641(playersList + i * 8);
         if (!obj) continue;
 
-        auto nameObj = *(String**)(obj + OFF_PLAYER_HERO_NAME);
-        std::string name = (nameObj && nameObj->CString()) ? nameObj->CString() : "Unknown";
+        // Tool ini EKSTERNAL (process_vm_readv) -> DILARANG deref langsung memori game (SIGSEGV).
+        // Nama hero dibaca remote: pointer string -> baca via vm_readv + konversi UTF16->UTF8.
+        uintptr_t namePtr = Read<uintptr_t>(obj + OFF_PLAYER_HERO_NAME);
+        std::string name = "Unknown";
+        if (namePtr) {
+            std::string nm = fshy(namePtr);
+            if (!nm.empty()) name = nm;
+        }
 
         uint64_t lUid = Read<uint64_t>(obj + OFF_PLAYER_CERTIFY);
         uint32_t zoneId = Read<uint32_t>(obj + OFF_PLAYER_ZONE_ID);
@@ -967,7 +978,7 @@ void Layout_tick_UI() {
     ImGuiWindowFlags window_flags = ImGuiWindowFlags_AlwaysAutoResize;
 ImGui::SetNextWindowSizeConstraints(ImVec2(800, 0), ImVec2(820, FLT_MAX));
 
-ImGui::Begin(oxorany("         Panxcz v2.0 - MLBB Tool"), nullptr, window_flags);
+ImGui::Begin(oxorany("         Panxcz v2.1 - MLBB Tool"), nullptr, window_flags);
 
 
     if (ImGui::BeginTabBar("####")) {
@@ -1119,7 +1130,7 @@ ImGui::Begin(oxorany("         Panxcz v2.0 - MLBB Tool"), nullptr, window_flags)
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] Panxcz v2.0 - MLBB Tool (NUSANTARA)\n");
+    printf("[+] Panxcz v2.1 - MLBB Tool (NUSANTARA)\n");
     printf("[+] Finding game process...\n");
     // Try multiple process names (MLBB varies per region/version)
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
@@ -1203,7 +1214,10 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         }
         MonsterRetribution();
         CheckAndTriggerRetribution();
-        RoomInfoList();
+        // RoomInfoList DI-NONAKTIFKAN: hasilnya (PlayerB/PlayerR) tidak pernah ditampilkan di UI,
+        // dan versi lama melakukan deref LANGSUNG memori game (tool eksternal) = SIGSEGV pas masuk match.
+        // Kalau mau fitur Room Info, implementasikan remote-read (Read/fshy) + tab Info dulu.
+        // RoomInfoList();
         drawBegin();
         Layout_tick_UI();
         drawEnd();

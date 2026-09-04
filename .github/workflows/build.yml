@@ -68,10 +68,16 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0
-          name: "Panxcz MLBB NUSANTARA v2.0"
+          tag_name: v2.1
+          name: "Panxcz MLBB NUSANTARA v2.1"
           body: |
-            ## Panxcz MLBB NUSANTARA v2.0
+            ## Panxcz MLBB NUSANTARA v2.1
+
+            ### HOTFIX — CRASH PAS MASUK MATCH (exit sendiri)
+            - **Akar masalah**: `RoomInfoList()` dipanggil tiap frame di main loop & melakukan deref LANGSUNG `*(String**)(game_addr)` — tool ini EKSTERNAL (baca via `process_vm_readv`), jadi alamat di address space game tidak valid di proses tool → SIGSEGV begitu BattleManager valid (in-match) → proses exit sendiri.
+            - **Fix**: pemanggilan `RoomInfoList()` di-nonaktifkan (hasilnya `PlayerB/PlayerR` memang tidak pernah ditampilkan di UI versi ini) + implementasi fungsi diperbaiki jadi remote-read (`Read` + `fshy`) kalau suatu saat dipakai lagi.
+            - **Anti-gila loop**: player count & monster count di-clamp (64/128) kalau kebaca sampah.
+            - **Zero-init posisi**: `Vector3 Z/D/ZL/Dm` di-inisialisasi 0 sebelum `vm_readv` (kalau baca gagal, posisi tidak jadi NaN/garbage).
 
             ### MAJOR — UPDATE TOTAL (v1.10 -> v2.0)
             - **Offset game di-update ke dump 22.1.97.12061** (sebelumnya v2.1.95 yg sudah obsolete) → BattleManager sekarang ketemu langsung via chain `slot -> +0xa8 -> Instance`, fallback ke memory scanner kalau beda versi.
