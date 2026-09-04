@@ -1175,69 +1175,7 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     ImGui::GetStyle().WindowRounding = 25.0f;
     printf("[+] Starting main loop...\n");
     
-    printf("[+] Starting main loop (menu langsung muncul, BM di-scan di background)...\n");
-    
-    // ===== Background thread: cari BattleManager (offset chain dulu, kalau gagal scan) =====
-    // Menu ImGui TIDAK pernah diblokir oleh scan — fitur aktif begitu BM ketemu.
-    static pthread_t bmThread;
-    pthread_create(&bmThread, nullptr, [](void *) -> void * {
-        int retry = 0;
-        while (main_thread_flag) {
-            if (!g_BattleManager) {
-                // 1) coba offset chain dulu (cepat). Debug tiap level biar jelas gagal di mana.
-                long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER);
-                long a2 = a1 ? getPtr641(a1 + OFF_BM_STATIC_FIELDS) : 0;
-                long bm = a2 ? getPtr641(a2) : 0;
-                bool ok = false;
-                if (bm > 0x10000 && bm < 0x7FFFFFFFFFFF) {
-                    long sp = getPtr641(bm + OFF_SHOW_PLAYERS);
-                    if (sp > 0x10000 && sp < 0x7FFFFFFFFFFF) {
-                        uint32_t check = Read<uint>(sp + 0x18);
-                        if (check <= 20) {   // count boleh 0 (belum match) — BM tetap valid
-                            g_BattleManager = bm;
-                            ok = true;
-                            printf("[+] BattleManager from offset: 0x%lx (players=%u)\n", bm, check);
-                        } else {
-                            printf("[DBG] BM chain: a1=0x%lx a2=0x%lx bm=0x%lx sp=0x%lx count=%u (aneh, skip)\n",
-                                   a1, a2, bm, sp, check);
-                        }
-                    } else {
-                        printf("[DBG] BM chain: a1=0x%lx a2=0x%lx bm=0x%lx sp INVALID\n", a1, a2, bm);
-                    }
-                } else {
-                    printf("[DBG] BM chain gagal: a1=0x%lx a2=0x%lx bm=0x%lx\n", a1, a2, bm);
-                }
-                // 2) kalau belum, scan memory (lambat, tapi di background — menu tetep jalan)
-                if (!ok) {
-                    if (retry % 4 == 0) {
-                        printf("[!] Offset 0x%x belum valid, scan memory (background)...\n", OFF_BATTLE_MANAGER);
-                        long scanned = FindBattleManager();
-                        if (scanned) {
-                            g_BattleManager = scanned;
-                            printf("[+] BattleManager found by scanner: 0x%lx\n", g_BattleManager);
-                        }
-                    }
-                    retry++;
-                    usleep(500000); // coba ulang tiap 0.5s
-                } else {
-                    usleep(1000000);
-                }
-            } else {
-                // Re-validate periodically — kalau invalid (ganti match), reset & cari lagi
-                static int recheck = 0;
-                if ((++recheck % 20) == 0) {
-                    long sp = getPtr641(g_BattleManager + OFF_SHOW_PLAYERS);
-                    if (sp < 0x10000 || sp > 0x7FFFFFFFFFFF) {
-                        printf("[!] BattleManager invalid, reset & re-scan...\n");
-                        g_BattleManager = 0;
-                    }
-                }
-                usleep(500000);
-            }
-        }
-        return nullptr;
-    }, nullptr);
-    pthread_detach(bmThread);
+    printf("[+] Starting main loop...\n");
     
     static int debugFrameCount = 0;
     while (main_thread_flag) {
@@ -1248,6 +1186,13 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
                 usleep(500000);
                 continue;
             }
+        }
+        // Resolve BattleManager LANGSUNG tiap frame (persis srcshen — tanpa scanner,
+        // tanpa validasi count). Menu tetap render; kalau BM null, fitur auto skip.
+        {
+            long a1 = getPtr641(libbase + OFF_BATTLE_MANAGER); // slot BattleManager
+            long a2 = a1 ? getPtr641(a1 + OFF_BM_STATIC_FIELDS) : 0; // static_fields
+            g_BattleManager = a2 ? getPtr641(a2) : 0; // Instance (field 0x0)
         }
         // hasil kalibrasi 1-tap: gerakkan dot marker ke posisi logical yang sama
         if (g_retriLogicalX >= 0.0f) {
