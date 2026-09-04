@@ -93,18 +93,19 @@ extern void Touch_TapNative(int x, int y, int holdMs);
 extern bool Touch_Busy();
 
 // i18n: EN / 中文
-#define TR(en, cn) (langEN ? (en) : (cn))
-
-std::string fshy(uintptr_t address)
+#define TR(en, cn) (langEN ? (en) : (cn))std::string fshy(uintptr_t address)
 {
-    if (!address) return "";
+    if (!address) return "";
 
-    auto stringLength = Read<uint32_t>(address + 0x10);
-    char16_t buffer[255] = { 0 };
+    auto stringLength = Read<uint32_t>(address + 0x10);
+    // clamp biar aman kalau header string ternyata invalid / offset salah
+    // (kalau dibiarin > 255 bakal overflow buffer di bawah)
+    if (stringLength > 255) stringLength = 255;
+    char16_t buffer[255] = { 0 };
 
-    pvm(reinterpret_cast<void *>(address + 0x14), reinterpret_cast<void *>(buffer), static_cast<size_t>(stringLength) * 2, false);
+    pvm(reinterpret_cast<void *>(address + 0x14), reinterpret_cast<void *>(buffer), static_cast<size_t>(stringLength) * 2, false);
 
-    return utf16_to_utf8(buffer, stringLength);
+    return utf16_to_utf8(buffer, stringLength);
 }
 
 struct RoomPlayerInfo {
@@ -665,6 +666,142 @@ void DrawMonster(ImDrawList *Draw) {
     }
 }
 
+// ====================================================================
+// ROOM / PLAYER INFO (live) — semua offset dari dump 22.1.97.12061:
+//   ShowEntity : m_ID 0x18c, m_Level 0x190, m_EntityCampType 0xd0,
+//                m_vCachePosition 0x28c, m_acId 0x68
+//   ShowPlayer : m_HeroName 0x8d0, m_uiRankLevel 0x90c,
+//                m_uiDefenceRankLevel 0x910, m_uZoneID 0x938,
+//                m_ulRoomID 0x940, m_iSummonSkillId 0x95c,
+//                m_killNum 0x9e0, m_assistNum 0x9e4, m_deadNum 0x9e8,
+//                m_iAddGoldValue 0xa24, m_sTeamName 0x8f8
+// ====================================================================
+struct RoomRow {
+    std::string hero;      // nama hero (m_HeroName)
+    std::string team;      // nama tim (m_sTeamName)
+    std::string spell;     // battle spell (m_iSummonSkillId)
+    std::string rank;      // rank (m_uiRankLevel + defence)
+    std::string id;        // acId (m_acId)
+    int level = 0;
+    int kills = 0, deaths = 0, assists = 0;
+    int gold = 0;
+    int zone = 0;
+    uint64_t roomId = 0;
+    float dist = 0.0f;
+    bool isSelf = false;
+};
+
+static RoomRow g_roomBlue[5];
+static RoomRow g_roomRed[5];
+static int g_roomBlueN = 0, g_roomRedN = 0;
+static int g_roomMyCamp = -1;
+static uintptr_t g_roomBM = 0;
+static bool g_debugOverlay = false;
+
+extern int MonsterCount;  // didefinisikan di bawah (blok MonsterData) — dipakai DrawDebugOverlay
+
+static std::string RoomStrField(uintptr_t obj, size_t off) {
+    uintptr_t h = Read<uintptr_t>(obj + off);
+    if (!h) return "";
+    return fshy(h);
+}
+
+// refresh daftar player (Biru = satu camp dgn self, Merah = musuh)
+static void RefreshRoomInfo() {
+    g_roomBlueN = 0; g_roomRedN = 0;
+    g_roomBM = 0;
+    uintptr_t slot = getPtr641(libbase + 0x62dc5e0);
+    if (!slot) return;
+    uintptr_t bm = getPtr641(getPtr641(slot + 0xa8));   // static_fields -> Instance
+    if (!bm) return;
+    g_roomBM = bm;
+
+    uintptr_t selfp = getPtr641(bm + 0x48);             // m_LocalPlayerShow
+    uintptr_t container = getPtr641(bm + 0x70);         // m_ShowPlayers (List<ShowPlayer>)
+    if (!container) return;
+    int count = Read<int>(container + 0x18);
+    if (count <= 0 || count > 12) return;
+    uintptr_t base = getPtr641(container + 0x10);       // items (Il2CppArray*)
+    if (!base) return;
+    base += 0x20;                                       // data array mulai di +0x20
+
+    int myCamp = -1;
+    if (selfp) myCamp = Read<int>(selfp + 0xd0);        // m_EntityCampType
+    g_roomMyCamp = myCamp;
+
+    Vector3 selfPos{};
+    if (selfp) vm_readv(selfp + 0x28c, &selfPos, sizeof(selfPos));
+
+    for (int i = 0; i < count; i++) {
+        uintptr_t obj = getPtr641(base + (size_t)i * 8);
+        if (!obj) continue;
+
+        RoomRow r;
+        r.hero   = RoomStrField(obj, 0x8d0);
+        r.team   = RoomStrField(obj, 0x8f8);
+        if (r.hero.empty()) {
+            int hid = Read<int>(obj + 0x18c);
+            r.hero = (hid > 0) ? HeroToString(hid) : "?";
+        }
+        r.spell  = SpellToString(Read<int>(obj + 0x95c));
+        uint32_t rk = Read<uint32_t>(obj + 0x90c);
+        uint32_t df = Read<uint32_t>(obj + 0x910);
+        r.rank   = (rk > 0) ? RankToString((int)rk, (int)df) : "-";
+        uint64_t ac = Read<uint64_t>(obj + 0x68);
+        r.id     = (ac > 0) ? std::to_string(ac) : "";
+        r.level  = Read<int>(obj + 0x190);
+        r.kills  = Read<int>(obj + 0x9e0);
+        r.assists= Read<int>(obj + 0x9e4);
+        r.deaths = Read<int>(obj + 0x9e8);
+        r.gold   = Read<int>(obj + 0xa24);
+        r.zone   = Read<int>(obj + 0x938);
+        r.roomId = Read<uint64_t>(obj + 0x940);
+        r.isSelf = (obj == selfp);
+
+        Vector3 p{};
+        vm_readv(obj + 0x28c, &p, sizeof(p));
+        if (selfp) r.dist = Vector3::Distance(selfPos, p);
+
+        int camp = Read<int>(obj + 0xd0);
+        if (myCamp > 0 && camp == myCamp) {
+            if (g_roomBlueN < 5) g_roomBlue[g_roomBlueN++] = r;
+        } else {
+            if (g_roomRedN < 5) g_roomRed[g_roomRedN++] = r;
+        }
+    }
+}
+
+static void RoomInfoRow(const RoomRow &r, bool blue) {
+    ImColor c = blue ? ImColor(70, 180, 255, 255) : ImColor(255, 90, 90, 255);
+    char line[512];
+    const char *hero = r.hero.empty() ? "?" : r.hero.c_str();
+    const char *spell = r.spell.empty() ? "-" : r.spell.c_str();
+    const char *rank = r.rank.empty() ? "-" : r.rank.c_str();
+    snprintf(line, sizeof(line), "%s%s | %s | Lv%d | %s | %s | K %d/%d/%d | G %d",
+             r.isSelf ? ">> " : "", hero, spell, r.level, rank,
+             r.team.empty() ? "-" : r.team.c_str(),
+             r.kills, r.deaths, r.assists, r.gold);
+    ImGui::TextColored(c, "%s", line);
+    if (r.dist > 0.1f) {
+        ImGui::SameLine(ImGui::GetWindowContentRegionMax().x - 130.0f);
+        ImGui::TextDisabled("%.0fm", r.dist);
+    }
+}
+
+// overlay debug kecil (kiri atas) — biar pas test langsung keliatan state internal
+static void DrawDebugOverlay(ImDrawList *dl) {
+    if (!g_debugOverlay) return;
+    char b[64];
+    snprintf(b, sizeof(b), "PID %d | libbase 0x%llx", pid, (unsigned long long)libbase);
+    dl->AddText(ImVec2(6, 6), IM_COL32(0, 255, 140, 255), b);
+    snprintf(b, sizeof(b), "BM 0x%llx | players B%d R%d | monsters %d",
+             (unsigned long long)g_roomBM, g_roomBlueN, g_roomRedN, MonsterCount);
+    dl->AddText(ImVec2(6, 6 + 20), IM_COL32(0, 220, 255, 255), b);
+    snprintf(b, sizeof(b), "FPS %.0f | camp %d | safe %s", ImGui::GetIO().Framerate,
+             g_roomMyCamp, safeMode ? "ON" : "OFF");
+    dl->AddText(ImVec2(6, 6 + 40), IM_COL32(255, 255, 255, 220), b);
+}
+
 struct MonsterData {
     uintptr_t address;
     Vector3 position;
@@ -1045,6 +1182,7 @@ void Layout_tick_UI() {
         // overlay tetap jalan walau menu di-minimize (draw sebelum End supaya g_window valid)
         if (MinimapIcon) DrawMinimapESP(ImGui::GetForegroundDrawList());
         DrawMonster(ImGui::GetForegroundDrawList());
+        DrawDebugOverlay(ImGui::GetForegroundDrawList());
         g_window = ImGui::GetCurrentWindow();
         ImGui::End();
         ImGui::PopStyleVar();
@@ -1068,7 +1206,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v0.7");
+    ImGui::TextDisabled("MLBB v0.8");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1203,6 +1341,55 @@ void Layout_tick_UI() {
             ImGui::EndTabItem();
         }
 
+        if (ImGui::BeginTabItem(TR("Info & Debug", "Info & Debug"))) {
+            // refresh daftar player tiap frame pas tab kebuka
+            RefreshRoomInfo();
+
+            SectionHeader(TR("My Info", "Info Saya"));
+            uintptr_t slot = getPtr641(libbase + 0x62dc5e0);
+            uintptr_t bm = slot ? getPtr641(getPtr641(slot + 0xa8)) : 0;
+            uintptr_t selfp = bm ? getPtr641(bm + 0x48) : 0;
+            int lvl = selfp ? Read<int>(selfp + 0x190) : 0;
+            std::string myHero = selfp ? RoomStrField(selfp, 0x8d0) : "";
+            if (myHero.empty() && selfp) {
+                int hid = Read<int>(selfp + 0x18c);
+                myHero = (hid > 0) ? HeroToString(hid) : "?";
+            }
+            int myK = selfp ? Read<int>(selfp + 0x9e0) : 0;
+            int myD = selfp ? Read<int>(selfp + 0x9e4) : 0;
+            int myA = selfp ? Read<int>(selfp + 0x9e8) : 0;
+            Vector3 mp{};
+            if (selfp) vm_readv(selfp + 0x28c, &mp, sizeof(mp));
+            ImGui::Text(TR("Hero: %s | Lv%d | KDA %d/%d/%d", "Hero: %s | Lv%d | KDA %d/%d/%d"),
+                        myHero.empty() ? "?" : myHero.c_str(), lvl, myK, myD, myA);
+            ImGui::Text(TR("Position: X %.0f Y %.0f Z %.0f", "Posisi: X %.0f Y %.0f Z %.0f"), mp.X, mp.Y, mp.Z);
+            if (!bm)
+                ImGui::TextColored(ImColor(255, 200, 60, 255), TR("[!] Belum masuk match / BattleManager belum ketemu", "[!] Belum masuk match / BattleManager belum ketemu"));
+            ImGui::Spacing();
+
+            SectionHeader(TR("Ally (Blue)", "Tim Biru (Sekutu)"));
+            if (g_roomBlueN == 0)
+                ImGui::TextDisabled("-");
+            for (int i = 0; i < g_roomBlueN && i < 5; i++)
+                RoomInfoRow(g_roomBlue[i], true);
+            ImGui::Spacing();
+
+            SectionHeader(TR("Enemy (Red)", "Tim Merah (Musuh)"));
+            if (g_roomRedN == 0)
+                ImGui::TextDisabled("-");
+            for (int i = 0; i < g_roomRedN && i < 5; i++)
+                RoomInfoRow(g_roomRed[i], false);
+            ImGui::Spacing();
+
+            SectionHeader(TR("Debug", "Debug"));
+            ImGui::Checkbox(TR("Debug overlay (top-left)", "Overlay debug (kiri atas)"), &g_debugOverlay);
+            ImGui::TextDisabled("PID %d | libbase 0x%llx", pid, (unsigned long long) libbase);
+            ImGui::TextDisabled("BM 0x%llx | Players B%d R%d | Monsters %d",
+                                (unsigned long long) g_roomBM, g_roomBlueN, g_roomRedN, MonsterCount);
+            ImGui::TextDisabled(TR("Room ID (dari ShowPlayer): tampil per pemain kalau tersedia.", "Room ID (dari ShowPlayer): tampil per pemain kalau tersedia."));
+            ImGui::EndTabItem();
+        }
+
         if (ImGui::BeginTabItem(TR("Settings", "Pengaturan"))) {
             SectionHeader(TR("Display", "Tampilan"));
             const char* themes[] = { "Neon Dark", "Light", "Classic" };
@@ -1240,6 +1427,7 @@ void Layout_tick_UI() {
     DrawMonster(ImGui::GetForegroundDrawList());
     g_window = ImGui::GetCurrentWindow();
     ImGui::End();
+    DrawDebugOverlay(ImGui::GetForegroundDrawList());
 }
 
 // ===== Simpan/muat kalibrasi & pengaturan (biar ga reset tiap run) =====
@@ -1392,7 +1580,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v0.7\n");
+    printf("[+] PANXCZ MLBB v0.8\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");

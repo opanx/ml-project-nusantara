@@ -52,16 +52,29 @@ jobs:
           name: panxcz-mlbb
           path: release/
 
-      - name: Create pre-release v0.7
+      - name: Create pre-release v0.8
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.7
-          name: "Panxcz cheat mlbb v0.7 pre release"
+          tag_name: v0.8
+          name: "Panxcz cheat mlbb v0.8 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v0.7 pre release
+            ## Panxcz cheat mlbb v0.8 pre release
 
-            ### FIX AKAR MASALAH — TOUCH & AUTO RETRI SEKARANG BENERAN JALAN
+            ### FITUR BARU — ROOM / PLAYER INFO + DEBUG
+            - **Tab Info & Debug**: daftar player live (Biru/sekutu & Merah/musuh) — setiap pemain nunjukin **Hero** (m_HeroName 0x8d0), **Battle Spell** (m_iSummonSkillId 0x95c → Retribution/Execute/Flicker dll), **Rank** (m_uiRankLevel 0x90c + defence 0x910), **Level**, **KDA** (0x9e0/0x9e8/0x9e4), **Gold** (0xa24), **Team name** (0x8f8), **jarak** dari lo, dan penanda `>>` buat diri sendiri. Pemisahan tim pakai `m_EntityCampType` (0xd0).
+            - **Info Saya**: hero, level, KDA, posisi X/Y/Z sendiri.
+            - **Debug overlay** (toggle, kiri atas): PID, libbase, alamat BattleManager, jumlah player per tim + monster, FPS, camp, status Safe Mode. Overlay ini juga tampil pas menu di-minimize.
+            - **Semua offset diverifikasi dari dump 22.1.97.12061** (dump menyertakan offset field; cocok dgn offset yg udah dipakai ESP aktif).
+            - Fix buffer overflow `SendTapMove` (ev[5] nulis 6 event → ev[8]).
+
+            ### FIX AKAR MASALAH — TOUCH & AUTO RETRI (v0.7)
+            - **`block_untrusted_touches 0` (global + secure + system) di-set otomatis saat start** — persis yg dilakukan herz-kimmy.sh. Android 12+ (AOSP 16) memblokir sentuhan dari perangkat uinput sebagai "untrusted" kalau setting ini nyala → **ini biang keladi "touch ga bisa sama sekali"** di semua versi sebelumnya. Sekarang event uinput (jari asli yg di-mirror + tap sintetik retri) diterima sistem.
+            - **uinput device sekarang mendaftarkan SEMUA kode ABS** (ABS_MT_PRESSURE, ABS_MT_TOUCH_MAJOR, dll) + range dari device asli. Sebelumnya mirror verbatim mengirim kode yg tidak terdaftar → kernel menolak **SELURUH batch write** → game tidak menerima sentuhan sama sekali (regresi sejak v0.5).
+            - **Range ABS_MT_SLOT dipaksa 0..15** supaya tap sintetik di slot 12 tidak di-clamp/merge dengan jari asli.
+            - **Tap retri langsung dieksekusi** (tidak lagi menunggu "tangan bersih") — slot 12 dedicated justru ada supaya aman nge-tap pas war. Nunggu jari lepas = retri ga pernah jalan saat teamfight.
+            - **Pill minimize dikecilkan**: tombol ⚡ PANXCZ (92x26) + FPS sejajar — tidak lagi kotak gede 190x46.
+            - **Icon hero ESP diperkecil** & ikut slider Ukuran Icon (g_ICSize) biar ga kebesaran.
             - **`block_untrusted_touches 0` (global + secure + system) di-set otomatis saat start** — persis yg dilakukan herz-kimmy.sh. Android 12+ (AOSP 16) memblokir sentuhan dari perangkat uinput sebagai "untrusted" kalau setting ini nyala → **ini biang keladi "touch ga bisa sama sekali"** di semua versi sebelumnya. Sekarang event uinput (jari asli yg di-mirror + tap sintetik retri) diterima sistem.
             - **uinput device sekarang mendaftarkan SEMUA kode ABS** (ABS_MT_PRESSURE, ABS_MT_TOUCH_MAJOR, dll) + range dari device asli. Sebelumnya mirror verbatim mengirim kode yg tidak terdaftar → kernel menolak **SELURUH batch write** → game tidak menerima sentuhan sama sekali (regresi sejak v0.5).
             - **Range ABS_MT_SLOT dipaksa 0..15** supaya tap sintetik di slot 12 tidak di-clamp/merge dengan jari asli.
