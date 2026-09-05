@@ -12,7 +12,7 @@
 
 #include "imgui.h"
 
-#define maxE 5
+#define maxE 16
 #define maxF 10
 #define UNGRAB 0
 #define GRAB 1
@@ -200,7 +200,11 @@ static void LogicalToNative(float xt, float yt, int *ox, int *oy) {
     *oy = (int) (y * scale_y);
 }
 
-static bool checkDeviceIsTouch(int fd);
+// Caps device sentuh. mtXY = punya ABS_MT_POSITION_X&Y (EVIOCGABS sukses).
+// slot = punya ABS_MT_SLOT (protocol type-B). Driver type-A (banyak mtk-tpd)
+// ga punya slot -> jangan ditolak, cuma prioritasnya di bawah yg punya slot.
+struct TouchCaps { bool slot, mtXY; };
+static TouchCaps probeTouchCaps(int fd);
 static void genRandomString(char *string, int length) {
     int flag, i;
     srand((unsigned) time(NULL) + length);
@@ -457,7 +461,7 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
     char evpath[maxE][64];
     int evCount = DiscoverTouchDevices(evpath);
     struct input_absinfo absX[maxE], absY[maxE];
-    int fd, i, tmp1, tmp2;
+    int fd, i;
     int screenX = 0, screenY = 0;
     fdNum = 0;
     // ===== FASE 1: cari & buka device sentuh (BELUM di-grab) =====
@@ -465,86 +469,82 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
     // SELinux/perm di ROM tertentu), fallback O_RDONLY -> mode grabless: real
     // touch tetap ke game langsung, kita baca buat ImGui, tap sintetik via uinput.
     // Gagal O_RDWR di-simpan errno-nya buat diagnosa.
-    int roFd[maxE];
-    int roCount = 0;
-    int rwFailErr = 0;
+    // Probe tiap node: buka RW dulu, kalau nolak baru RO. Klasifikasi caps per
+    // node (slot type-B? punya sumbu MT X/Y?). Device type-A (banyak mtk-tpd,
+    // ROM AOSP) sering TIDAK punya ABS_MT_SLOT -> jangan ditolak mentah2.
+    int rwFd[maxE], roFd[maxE];
+    bool rwSlot[maxE], roSlot[maxE];
+    int rwCount = 0, roCount = 0;
+    int rwFailErr = 0, openRwOk = 0, diagRej = 0;
     g_touchOpenErrno = 0;
-    for (i = 0; i < evCount && fdNum < maxE; i++) {
+    for (i = 0; i < evCount; i++) {
         errno = 0;
         fd = open(evpath[i], O_RDWR | O_NONBLOCK);
         if (fd >= 0) {
-            if (checkDeviceIsTouch(fd)) {
-                tmp1 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &absX[fdNum]);
-                tmp2 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY[fdNum]);
-                if (tmp1 == 0 && tmp2 == 0) {
-                    if (fdNum == 0) {
-                        char nm[64] = "";
-                        if (ioctl(fd, EVIOCGNAME(sizeof(nm) - 1), nm) >= 0)
-                            strncpy(g_touchDevName, nm, sizeof(g_touchDevName) - 1);
-                        screenX = absX[0].maximum;
-                        screenY = absY[0].maximum;
-                        s_panelMaxX = screenX;
-                        s_panelMaxY = screenY;
-                    }
-                    s_fdRw[fdNum] = true;
-                    origfd[fdNum] = fd;
-                    fdNum++;
-                    continue;
-                }
-            }
-            close(fd);
+            openRwOk++;
+            TouchCaps c = probeTouchCaps(fd);
+            if (c.mtXY) {
+                if (rwCount < maxE) { rwFd[rwCount] = fd; rwSlot[rwCount] = c.slot; rwCount++; }
+                else close(fd);
+            } else { diagRej++; close(fd); }
             continue;
         }
-        rwFailErr = errno;
-        if (roCount < maxE) {
-            int rfd = open(evpath[i], O_RDONLY | O_NONBLOCK);
-            if (rfd >= 0) {
-                if (checkDeviceIsTouch(rfd)) {
-                    roFd[roCount] = rfd;
-                    roCount++;
-                } else {
-                    close(rfd);
-                }
+        if (!rwFailErr) rwFailErr = errno;
+        int rfd = open(evpath[i], O_RDONLY | O_NONBLOCK);
+        if (rfd >= 0) {
+            TouchCaps c = probeTouchCaps(rfd);
+            if (c.mtXY) {
+                if (roCount < maxE) { roFd[roCount] = rfd; roSlot[roCount] = c.slot; roCount++; }
+                else close(rfd);
+            } else close(rfd);
+        }
+    }
+    // Prioritas: RW+slot > RW+no-slot > RO+slot > RO+no-slot (grabless).
+    // Thread baca (TypeA) aman utk no-slot: index slot default 0.
+    bool usedRo = false;
+    auto claim = [&](int cfd, bool rw) {
+        if (fdNum >= maxE) return;
+        if (ioctl(cfd, EVIOCGABS(ABS_MT_POSITION_X), &absX[fdNum]) != 0 ||
+            ioctl(cfd, EVIOCGABS(ABS_MT_POSITION_Y), &absY[fdNum]) != 0) { close(cfd); return; }
+        if (fdNum == 0) {
+            char nm[64] = "";
+            if (ioctl(cfd, EVIOCGNAME(sizeof(nm) - 1), nm) >= 0)
+                strncpy(g_touchDevName, nm, sizeof(g_touchDevName) - 1);
+            screenX = absX[0].maximum;
+            screenY = absY[0].maximum;
+            s_panelMaxX = screenX;
+            s_panelMaxY = screenY;
+        }
+        s_fdRw[fdNum] = rw;
+        origfd[fdNum] = cfd;
+        fdNum++;
+    };
+    for (int pass = 0; pass < 4 && fdNum < maxE; pass++) {
+        bool wantRw = (pass < 2);
+        bool wantSlot = (pass % 2 == 0);
+        int  *fromFd   = wantRw ? rwFd : roFd;
+        bool *fromSlot = wantRw ? rwSlot : roSlot;
+        int   fromN    = wantRw ? rwCount : roCount;
+        for (i = 0; i < fromN && fdNum < maxE; i++) {
+            if (fromSlot[i] == wantSlot && fromFd[i] > 0) {
+                claim(fromFd[i], wantRw);
+                fromFd[i] = -1;
+                if (!wantRw) usedRo = true;
             }
         }
     }
-
-    if (fdNum == 0 && roCount > 0) {
-        // semua nolak O_RDWR -> pakai device read-only (grabless)
-        for (i = 0; i < roCount && fdNum < maxE; i++) {
-            fd = roFd[i];
-            tmp1 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &absX[fdNum]);
-            tmp2 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY[fdNum]);
-            if (tmp1 == 0 && tmp2 == 0) {
-                if (fdNum == 0) {
-                    char nm[64] = "";
-                    if (ioctl(fd, EVIOCGNAME(sizeof(nm) - 1), nm) >= 0)
-                        strncpy(g_touchDevName, nm, sizeof(g_touchDevName) - 1);
-                    screenX = absX[0].maximum;
-                    screenY = absY[0].maximum;
-                    s_panelMaxX = screenX;
-                    s_panelMaxY = screenY;
-                }
-                s_fdRw[fdNum] = false;
-                origfd[fdNum] = fd;
-                fdNum++;
-            } else {
-                close(fd);
-            }
-        }
-        if (fdNum > 0) {
-            g_touchOpenErrno = rwFailErr;
-            printf("[TOUCH] WARNING: /dev/input cuma bisa dibuka READ-ONLY (errno=%d). Mode GRABLESS: real touch langsung ke game, ImGui dari baca aja, tap sintetik via uinput.\n",
-                   rwFailErr);
-        }
-    } else {
-        for (i = 0; i < roCount; i++) close(roFd[i]);
-    }
+    for (i = 0; i < rwCount; i++) if (rwFd[i] > 0) close(rwFd[i]);
+    for (i = 0; i < roCount; i++) if (roFd[i] > 0) close(roFd[i]);
 
     if (fdNum <= 0) {
-        printf("[TOUCH] FAILED: tidak ada device sentuh ditemukan (%d event node, open RW errno=%d)\n",
-               evCount, rwFailErr ? rwFailErr : g_touchOpenErrno);
+        printf("[TOUCH] FAILED: tidak ada device sentuh ditemukan (%d node, RW terbuka=%d ditolak-cap=%d errno=%d). Kirim log ini + \"getevent -pl\" utk diagnosa.\n",
+               evCount, openRwOk, diagRej, rwFailErr ? rwFailErr : g_touchOpenErrno);
         return false;
+    }
+    if (usedRo) {
+        g_touchOpenErrno = rwFailErr;
+        printf("[TOUCH] WARNING: /dev/input cuma bisa dibuka READ-ONLY (errno=%d). Mode GRABLESS: real touch langsung ke game, ImGui dari baca aja, tap sintetik via uinput.\n",
+               rwFailErr);
     }
 
     // ===== FASE 2: buat uinput DULU (baru grab device asli) =====
@@ -736,12 +736,13 @@ void UpdateScreenData(int w, int h, uint32_t orientation_) {
     ::orientation = orientation_;
 }
 
-static bool checkDeviceIsTouch(int fd) {
+static TouchCaps probeTouchCaps(int fd) {
+    TouchCaps c{false, false};
     uint8_t *bits = NULL;
     ssize_t bits_size = 0;
     int res, j, k;
-    bool itmp = false, itmp2 = false, itmp3 = false;
     struct input_absinfo abs{};
+    bool hx = false, hy = false;
     while (true) {
         res = ioctl(fd, EVIOCGBIT(EV_ABS, bits_size), bits);
         if (res < bits_size)
@@ -750,24 +751,25 @@ static bool checkDeviceIsTouch(int fd) {
         bits = (uint8_t *) realloc(bits, bits_size * 2);
     }
     for (j = 0; j < res; j++) {
-        for (k = 0; k < 8; k++)
-            if (bits[j] & 1 << k && ioctl(fd, EVIOCGABS(j * 8 + k), &abs) == 0) {
-                if (j * 8 + k == ABS_MT_SLOT) {
-                    itmp = true;
-                    continue;
-                }
-                if (j * 8 + k == ABS_MT_POSITION_X) {
-                    itmp2 = true;
-                    continue;
-                }
-                if (j * 8 + k == ABS_MT_POSITION_Y) {
-                    itmp3 = true;
-                    continue;
-                }
+        for (k = 0; k < 8; k++) {
+            if (!(bits[j] & (1 << k)))
+                continue;
+            int code = j * 8 + k;
+            if (code == ABS_MT_SLOT) {
+                c.slot = true;
+                continue;
             }
+            if (code != ABS_MT_POSITION_X && code != ABS_MT_POSITION_Y)
+                continue;
+            if (ioctl(fd, EVIOCGABS(code), &abs) == 0) {
+                if (code == ABS_MT_POSITION_X) hx = true;
+                else hy = true;
+            }
+        }
     }
     free(bits);
-    return itmp && itmp2 && itmp3;
+    c.mtXY = hx && hy;
+    return c;
 }
 
 void Touch_Close() {

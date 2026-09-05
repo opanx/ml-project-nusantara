@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.12"
+          REL="v1.13"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,36 +70,40 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.12
+      - name: Create pre-release v1.13
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v1.12
-          name: "Panxcz cheat mlbb v1.12 pre release (fix Touch_Init: RO/grabless fallback)"
+          tag_name: v1.13
+          name: "Panxcz cheat mlbb v1.13 pre release (fix device discovery toleran type-A)"
           prerelease: true
           body: |
+            ## Panxcz cheat mlbb v1.13 pre release (fix device discovery toleran type-A)
+
+            ### 🎯 AKAR "tidak ada device sentuh ditemukan" (log v1.11/v1.12):
+            ```
+            [TOUCH] FAILED: tidak ada device sentuh ditemukan (5 event node, open RW errno=0)
+            ```
+            Semua /dev/input **kebuka** (errno=0) tapi semuanya ditolak `checkDeviceIsTouch`.
+            Sebabnya: deteksi lama **WAJIB punya ABS_MT_SLOT + ABS_MT_POSITION_X/Y sekaligus**.
+            Banyak driver type-A (mtk-tpd / ROM AOSP) ga emit ABS_MT_SLOT -> padahal dia
+            device sentuh yang valid -> semua ditolak -> Touch_Init gagal -> menu mati & ga
+            ada thread yang feed ImGui.
+
+            ### 🔧 Fix di v1.13:
+            - **Deteksi toleran**: cukup ABS_MT_POSITION_X/Y (EVIOCGABS sukses). ABS_MT_SLOT
+              jadi opsional - device tanpa slot tetap diterima (thread baca aman: index slot
+              default 0), cuma prioritasnya di bawah yang punya slot (type-B lebih rapi).
+            - **Prioritas berlapis**: RW+slot > RW+no-slot > RO+slot > RO+no-slot (grabless).
+            - **Diagnosa lengkap**: kalau masih gagal, pesan FAILED sekarang nampilin jumlah
+              node yang kebuka RW vs yang ditolak caps - langsung ketahuan device-nya kenapa.
+
+            ---
+
             ## Panxcz cheat mlbb v1.12 pre release (fix Touch_Init: RO/grabless fallback)
 
-            ### 🎯 AKAR MENU MATI KETEMU DARI LOG v1.11:
-            ```
-            [TOUCH] FAILED: tidak ada device sentuh ditemukan (5 event node)
-            [-] Touch_Init FAILED - auto retri & mirror touch tidak aktif!
-            ```
-            **Touch_Init gagal total** -> ga ada grab, ga ada uinput, ga ada thread yang feed
-            ImGui -> makanya menu ga bisa disentuh & realtouch=0. (v1.8 dulu sempat sukses
-            "init OK: 1 device grabbed [mtk-tpd]", sekarang semua /dev/input nolak dibuka
-            O_RDWR - kemungkinan SELinux/permission di sesi itu).
-
             ### 🔧 Fix di v1.12:
-            - **Fallback READ-ONLY (mode GRABLESS)**: kalau /dev/input nolak O_RDWR, coba
-              O_RDONLY. Kalau berhasil -> tool jalan mode grabless: real touch langsung ke
-              game (ga di-grab, ga dobel), ImGui di-feed dari baca aja (menu hidup lagi),
-              tap sintetik retri tetap lewat uinput.
-            - **Diagnostik errno**: tiap open gagal sekarang kelihatan errno-nya di pesan
-              FAILED/WARNING (mis. EACCES=13) - langsung ketahuan kenapa nolak.
-            - **Baris init**: `[TOUCH] init OK: N device mode=GRAB/GRABLESS [...]` - status
-              mode jelas. GRABLESS = real touch langsung ke game.
-            - **Panel Skill CD dipindah DI BAWAH bar HP/MP** (rata kiri) - ga nabrak panel
-              hero sebelah lagi.
+            - Fallback READ-ONLY (mode GRABLESS) kalau /dev/input nolak O_RDWR + diagnostik
+              errno + baris init `mode=GRAB/GRABLESS` + panel Skill CD di bawah bar HP/MP.
 
             ---
 
