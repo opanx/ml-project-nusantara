@@ -39,6 +39,13 @@ int Touch_PanelMaxY() { return s_panelMaxY; }
 long long g_realTouchDowns = 0;
 bool  g_realTouchLogged = false;
 
+// mode grabless: device asli cuma bisa dibuka READ-ONLY (SELinux/perm nolak
+// O_RDWR). Real touch langsung ke game (ga di-grab), kita baca utk ImGui aja,
+// tap sintetik tetap lewat uinput. g_touchOpenErrno = errno open O_RDWR terakhir.
+static bool s_fdRw[maxE];
+bool g_touchGrabless = false;
+int  g_touchOpenErrno = 0;
+
 // Diagnostics touch (dibaca UI utk debug)
 bool g_touchDebugLog = true;
 int  g_touchInitOk = 0;
@@ -341,7 +348,9 @@ static void *TypeA(void *arg) {
         // urutan & timing driver asli) ke uinput clone. Game terima stream identik dgn
         // kondisi tanpa overlay -> gesture/flick MLBB (quick emote, slide chat) tetap
         // natural. Tap sintetik (retri) injeksi lewat slot terpisah (SendTap*).
-        if (!Touch_readOnly && nowfd > 0) {
+        // Mode grabless: TIDAK mirror (device asli ga di-grab -> real touch udah
+        // sampai game sendiri; kalau kita mirror bakal dobel).
+        if (!Touch_readOnly && !g_touchGrabless && nowfd > 0) {
             ssize_t wrc = write(nowfd, inputEvent, (size_t) readSize);
             if (wrc > 0) { g_touchMirrorWrites++; g_touchMirrorBytes += wrc; }
             else if (wrc < 0) g_touchLastErr = errno;
@@ -452,12 +461,58 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
     int screenX = 0, screenY = 0;
     fdNum = 0;
     // ===== FASE 1: cari & buka device sentuh (BELUM di-grab) =====
+    // Prioritas O_RDWR (biar bisa di-grab + mirror). Kalau semua nolak (biasanya
+    // SELinux/perm di ROM tertentu), fallback O_RDONLY -> mode grabless: real
+    // touch tetap ke game langsung, kita baca buat ImGui, tap sintetik via uinput.
+    // Gagal O_RDWR di-simpan errno-nya buat diagnosa.
+    int roFd[maxE];
+    int roCount = 0;
+    int rwFailErr = 0;
+    g_touchOpenErrno = 0;
     for (i = 0; i < evCount && fdNum < maxE; i++) {
-        fd = open(evpath[i], O_RDWR);
-        if (fd < 0) {
+        errno = 0;
+        fd = open(evpath[i], O_RDWR | O_NONBLOCK);
+        if (fd >= 0) {
+            if (checkDeviceIsTouch(fd)) {
+                tmp1 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &absX[fdNum]);
+                tmp2 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY[fdNum]);
+                if (tmp1 == 0 && tmp2 == 0) {
+                    if (fdNum == 0) {
+                        char nm[64] = "";
+                        if (ioctl(fd, EVIOCGNAME(sizeof(nm) - 1), nm) >= 0)
+                            strncpy(g_touchDevName, nm, sizeof(g_touchDevName) - 1);
+                        screenX = absX[0].maximum;
+                        screenY = absY[0].maximum;
+                        s_panelMaxX = screenX;
+                        s_panelMaxY = screenY;
+                    }
+                    s_fdRw[fdNum] = true;
+                    origfd[fdNum] = fd;
+                    fdNum++;
+                    continue;
+                }
+            }
+            close(fd);
             continue;
         }
-        if (checkDeviceIsTouch(fd)) {
+        rwFailErr = errno;
+        if (roCount < maxE) {
+            int rfd = open(evpath[i], O_RDONLY | O_NONBLOCK);
+            if (rfd >= 0) {
+                if (checkDeviceIsTouch(rfd)) {
+                    roFd[roCount] = rfd;
+                    roCount++;
+                } else {
+                    close(rfd);
+                }
+            }
+        }
+    }
+
+    if (fdNum == 0 && roCount > 0) {
+        // semua nolak O_RDWR -> pakai device read-only (grabless)
+        for (i = 0; i < roCount && fdNum < maxE; i++) {
+            fd = roFd[i];
             tmp1 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &absX[fdNum]);
             tmp2 = ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY[fdNum]);
             if (tmp1 == 0 && tmp2 == 0) {
@@ -470,18 +525,25 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
                     s_panelMaxX = screenX;
                     s_panelMaxY = screenY;
                 }
+                s_fdRw[fdNum] = false;
                 origfd[fdNum] = fd;
                 fdNum++;
             } else {
                 close(fd);
             }
-        } else {
-            close(fd);
         }
+        if (fdNum > 0) {
+            g_touchOpenErrno = rwFailErr;
+            printf("[TOUCH] WARNING: /dev/input cuma bisa dibuka READ-ONLY (errno=%d). Mode GRABLESS: real touch langsung ke game, ImGui dari baca aja, tap sintetik via uinput.\n",
+                   rwFailErr);
+        }
+    } else {
+        for (i = 0; i < roCount; i++) close(roFd[i]);
     }
 
     if (fdNum <= 0) {
-        printf("[TOUCH] FAILED: tidak ada device sentuh ditemukan (%d event node)\n", evCount);
+        printf("[TOUCH] FAILED: tidak ada device sentuh ditemukan (%d event node, open RW errno=%d)\n",
+               evCount, rwFailErr ? rwFailErr : g_touchOpenErrno);
         return false;
     }
 
@@ -616,11 +678,16 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
             return false;
         }
     }
-    // ===== FASE 3: grab device asli + start thread mirror =====
+    // ===== FASE 3: grab device asli (cuma yg kebuka R/W) + start thread =====
+    g_touchGrabless = true;
     if (!readOnly) {
         for (i = 0; i < fdNum; i++) {
+            if (!s_fdRw[i]) continue;
+            g_touchGrabless = false;
             ioctl(origfd[i], EVIOCGRAB, GRAB);
         }
+    } else {
+        g_touchGrabless = true;
     }
     Touch_initialized = true;
     Touch_readOnly = readOnly;
@@ -647,10 +714,12 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
 
     g_touchInitOk = 1;
     g_touchFdCount = fdNum;
-    printf("[TOUCH] init OK: %d device grabbed [%s], uinput fd=%d, screen %dx%d orient=%u scale=%.2f/%.2f\n",
-           fdNum, g_touchDevName[0] ? g_touchDevName : "?", nowfd, screenX, screenY,
+    printf("[TOUCH] init OK: %d device mode=%s [%s], uinput fd=%d, screen %dx%d orient=%u scale=%.2f/%.2f\n",
+           fdNum, g_touchGrabless ? "GRABLESS" : "GRAB",
+           g_touchDevName[0] ? g_touchDevName : "?", nowfd, screenX, screenY,
            (unsigned) orientation_, scale_x, scale_y);
-    system("chmod 000 -R /proc/bus/input/*");
+    if (!g_touchGrabless)
+        system("chmod 000 -R /proc/bus/input/*");
 
     // watchdog re-disable block_untrusted_touches (counter anti-cheat re-enable)
     if (!readOnly) {
@@ -706,7 +775,7 @@ void Touch_Close() {
     if (Touch_initialized) {
         for (int i = 0; i < maxE; ++i) {
             if (origfd[i] > 0) {
-                if (!Touch_readOnly)
+                if (!Touch_readOnly && s_fdRw[i])
                     ioctl(origfd[i], EVIOCGRAB, UNGRAB);
                 close(origfd[i]);
                 origfd[i] = 0;

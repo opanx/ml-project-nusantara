@@ -877,9 +877,11 @@ void DrawMonster(ImDrawList *Draw) {
                 const bool* slotReady = cdReady;
                 const int*  slotCd    = cdRemain;
                 const char* slotName[3] = { "S1", "S2", "ULT" };
-                float cdx = px + bw + 14.0f;   // kanan panel HP/MP
-                float cy  = HeroPos.Y - 30.0f;  // sejajar atas panel
-                const float colW = 30.0f;
+                // letakkan DI BAWAH bar HP/MP (rata kiri sama panel) - bukan di kanan,
+                // biar ga nutup/nabrak panel hero sebelah
+                float cdx = px;
+                float cy  = py + 6.0f;
+                const float colW = 36.0f;
                 for (int s = 0; s < 3; s++) {
                     float sx = cdx + s * colW + colW / 2.0f;
                     if (!slotReady[s]) {
@@ -2072,7 +2074,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.11 (observability: trusted overlay + orientasi + telemetri)\n");
+    printf("[+] PANXCZ MLBB v1.12 (fix Touch_Init: fallback read-only/grabless + CD di bawah bar)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");

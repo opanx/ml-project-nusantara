@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.11"
+          REL="v1.12"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,13 +70,39 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.11
+      - name: Create pre-release v1.12
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v1.11
-          name: "Panxcz cheat mlbb v1.11 pre release (observability)"
+          tag_name: v1.12
+          name: "Panxcz cheat mlbb v1.12 pre release (fix Touch_Init: RO/grabless fallback)"
           prerelease: true
           body: |
+            ## Panxcz cheat mlbb v1.12 pre release (fix Touch_Init: RO/grabless fallback)
+
+            ### 🎯 AKAR MENU MATI KETEMU DARI LOG v1.11:
+            ```
+            [TOUCH] FAILED: tidak ada device sentuh ditemukan (5 event node)
+            [-] Touch_Init FAILED - auto retri & mirror touch tidak aktif!
+            ```
+            **Touch_Init gagal total** -> ga ada grab, ga ada uinput, ga ada thread yang feed
+            ImGui -> makanya menu ga bisa disentuh & realtouch=0. (v1.8 dulu sempat sukses
+            "init OK: 1 device grabbed [mtk-tpd]", sekarang semua /dev/input nolak dibuka
+            O_RDWR - kemungkinan SELinux/permission di sesi itu).
+
+            ### 🔧 Fix di v1.12:
+            - **Fallback READ-ONLY (mode GRABLESS)**: kalau /dev/input nolak O_RDWR, coba
+              O_RDONLY. Kalau berhasil -> tool jalan mode grabless: real touch langsung ke
+              game (ga di-grab, ga dobel), ImGui di-feed dari baca aja (menu hidup lagi),
+              tap sintetik retri tetap lewat uinput.
+            - **Diagnostik errno**: tiap open gagal sekarang kelihatan errno-nya di pesan
+              FAILED/WARNING (mis. EACCES=13) - langsung ketahuan kenapa nolak.
+            - **Baris init**: `[TOUCH] init OK: N device mode=GRAB/GRABLESS [...]` - status
+              mode jelas. GRABLESS = real touch langsung ke game.
+            - **Panel Skill CD dipindah DI BAWAH bar HP/MP** (rata kiri) - ga nabrak panel
+              hero sebelah lagi.
+
+            ---
+
             ## Panxcz cheat mlbb v1.11 pre release (observability)
 
             ### 🔬 STUDI HERZ-KIMMY SAMPAI AKAR + STATUS YANG SEKARANG KELIHATAN (v1.11)
