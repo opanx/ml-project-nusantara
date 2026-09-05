@@ -92,6 +92,8 @@ extern float g_retriLogicalX;
 extern float g_retriLogicalY;
 extern void Touch_TapNative(int x, int y, int holdMs);
 extern bool Touch_Busy();
+extern int  Touch_PanelMaxX();
+extern int  Touch_PanelMaxY();
 
 // diagnostics touch (dari TouchHelperA - buat debug kenapa tap ga nyampe)
 extern bool g_touchDebugLog;
@@ -530,7 +532,120 @@ int retriDmgBonus = 0;         // koreksi damage retri (kalau formula meleset)
 float retriMaxDist = 700.0f;   // jarak max trigger dlm unit DUNIA asli (range retri MLBB = 700). Jangan pakai skala minimap!
 float retriJungleMult = 1.0f;  // pengali damage utk monster (item jungle/blessing)
 
-// ===== Direct Call bypass (v1.5) =====
+static uint64_t NowMs();   // defined di bawah (dipakai verifikasi retri)
+
+// ============================================================
+// ===== Screen mapping: dot (logical overlay) -> native panel =
+// Kalibrasi "Set Dot" kasih pasangan (logical, native) utk SATU
+// titik fisik yang sama (user ketuk tombol retri ASLI). Mapping
+// layar->panel itu affine axis-aligned (skala + rotasi 90 + mirror),
+// jadi 8 kandidat transform normalized dicoba dan dipilih yang paling
+// cocok dengan anchor. Efeknya: dot yang digeser user lewat X/Y
+// selalu di-tap di native yang BENAR (ga kejebak native stale cfg).
+// ============================================================
+static float  s_anchorLX = -1, s_anchorLY = -1;
+static int    s_anchorNX = -1, s_anchorNY = -1;
+static int    s_mapBest  = -1;   // kandidat terbaik 0..7, -1 = belum bisa
+
+static void ScreenMapSetAnchor(float lx, float ly, int nx, int ny) {
+    s_anchorLX = lx; s_anchorLY = ly;
+    s_anchorNX = nx; s_anchorNY = ny;
+    s_mapBest = -1;
+}
+
+static void ScreenMapSolve() {
+    s_mapBest = -1;
+    if (s_anchorLX < 0 || s_anchorNX < 0) return;
+    float SW = (float) abs_ScreenX, SH = (float) abs_ScreenY;
+    int PW = Touch_PanelMaxX(), PH = Touch_PanelMaxY();
+    if (SW <= 1.0f || SH <= 1.0f || PW <= 0 || PH <= 0) return;
+    float bestErr = 1e18f;
+    for (int c = 0; c < 8; c++) {
+        float u = s_anchorLX / SW, v = s_anchorLY / SH, nx, ny;
+        switch (c) {
+            case 0: nx = u;     ny = v;     break;
+            case 1: nx = 1 - u; ny = v;     break;
+            case 2: nx = u;     ny = 1 - v; break;
+            case 3: nx = 1 - u; ny = 1 - v; break;
+            case 4: nx = v;     ny = u;     break;
+            case 5: nx = 1 - v; ny = u;     break;
+            case 6: nx = v;     ny = 1 - u; break;
+            default: nx = 1 - v; ny = 1 - u; break;
+        }
+        float ex = nx * PW - (float) s_anchorNX;
+        float ey = ny * PH - (float) s_anchorNY;
+        float err = ex * ex + ey * ey;
+        if (err < bestErr) { bestErr = err; s_mapBest = c; }
+    }
+    // 1 anchor harus cocok < ~2% dari diagonal panel biar dianggap valid
+    if (bestErr > 0.0004f * (float)(PW * PW + PH * PH)) s_mapBest = -1;
+}
+
+// dot (logical overlay, mis. retriTouchX/Y) -> native panel. true kalau valid.
+static bool DotToNative(float lx, float ly, int *ox, int *oy) {
+    float SW = (float) abs_ScreenX, SH = (float) abs_ScreenY;
+    int PW = Touch_PanelMaxX(), PH = Touch_PanelMaxY();
+    if (SW <= 1.0f || SH <= 1.0f || PW <= 0 || PH <= 0) return false;
+    if (s_mapBest < 0) ScreenMapSolve();
+    if (s_mapBest < 0) return false;
+    float u = lx / SW, v = ly / SH, fnx, fny;
+    switch (s_mapBest) {
+        case 0: fnx = u;     fny = v;     break;
+        case 1: fnx = 1 - u; fny = v;     break;
+        case 2: fnx = u;     fny = 1 - v; break;
+        case 3: fnx = 1 - u; fny = 1 - v; break;
+        case 4: fnx = v;     fny = u;     break;
+        case 5: fnx = 1 - v; fny = u;     break;
+        case 6: fnx = v;     fny = 1 - u; break;
+        default: fnx = 1 - v; fny = 1 - u; break;
+    }
+    int X = (int) (fnx * PW + 0.5f);
+    int Y = (int) (fny * PH + 0.5f);
+    if (X < 0 || X > PW || Y < 0 || Y > PH) return false;
+    *ox = X; *oy = Y;
+    return true;
+}
+
+// native valid buat panel device skrg? (nyaring cfg native stale dari HP lain)
+static bool NativeInPanel(int nx, int ny) {
+    int PW = Touch_PanelMaxX(), PH = Touch_PanelMaxY();
+    if (PW <= 0 || PH <= 0) return false;
+    return nx >= 0 && nx <= PW && ny >= 0 && ny <= PH;
+}
+
+// ============================================================
+// ===== Verifikasi objektif: apakah tap beneran cast retri =====
+// Setelah tap, cek ulang HP target ~500ms kemudian. Kalau HP turun
+// (atau target mati/ilang) -> tap KENA. Ini buat user tau apakah
+// posisi dot udah bener, ga nebak-nebak.
+// ============================================================
+static uintptr_t s_verifyAddr = 0;
+static int   s_verifyHpBefore = 0;
+static uint64_t s_verifyAt = 0;
+
+static void RetriVerifyArm(uintptr_t addr, int hpBefore) {
+    s_verifyAddr = addr;
+    s_verifyHpBefore = hpBefore;
+    s_verifyAt = NowMs();
+}
+
+static void RetriCheckVerify() {
+    if (!s_verifyAddr) return;
+    if (NowMs() - s_verifyAt < 500) return;
+    uintptr_t a = s_verifyAddr;
+    s_verifyAddr = 0;
+    // addr udah ga valid (monster ilang) = kemungkinan besar retri kena & mati
+    if (!ReadPtr(a) || Read<int>(a + 0x18c) == 0) {
+        printf("[RETRI] ✓ target mati/ilang setelah tap (retri KENA!)\n");
+        return;
+    }
+    int nowHp = Read<int>(a + 0x1a4);
+    if (nowHp >= 0 && nowHp < s_verifyHpBefore) {
+        printf("[RETRI] ✓ HP turun %d -> %d (retri kena!)\n", s_verifyHpBefore, nowHp);
+    } else {
+        printf("[RETRI] ✗ HP masih %d (tap ga kena / retri lagi CD) - geser dot PERSIS ke tombol retri & Set Dot ulang.\n", nowHp);
+    }
+}
 // Panggil fungsi cast retri DI DALAM proses game via signal trampoline
 // (RemoteCall.h). Lebih cepat & presisi dari sentuhan. Default RVA =
 // ChooseHeroMgr.ReqUseSummonSkill dari dump 22.1.97.12061.
@@ -1157,13 +1272,19 @@ static void RetriBypassTick() {
 static void DoRetriTap(int i, uint64_t now) {
     printf("[RETRI] auto-tap target#%d dist=%.0f hp=%d/%d -> ",
            i, monster[i].distance, monster[i].health, monster[i].maxHP);
+    int tnx = -1, tny = -1;
     if (g_retriDirectReady && RC::Fire(pid) == 1) {
         printf("DIRECT-CALL (bypass)\n");
-    } else if (g_retriNativeX >= 0 && g_retriNativeY >= 0) {
-        printf("native(%d,%d)\n", g_retriNativeX, g_retriNativeY);
+    } else if (DotToNative(retriTouchX, retriTouchY, &tnx, &tny)) {
+        printf("native(dot %d,%d)\n", tnx, tny);
+        Touch_TapNative(tnx, tny, retriHoldMs);
+        RetriVerifyArm(monster[i].address, monster[i].health);
+    } else if (NativeInPanel(g_retriNativeX, g_retriNativeY)) {
+        printf("native(calib %d,%d)\n", g_retriNativeX, g_retriNativeY);
         Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
+        RetriVerifyArm(monster[i].address, monster[i].health);
     } else {
-        printf("logical(%.0f,%.0f)\n", retriTouchX, retriTouchY);
+        printf("logical(%.0f,%.0f) [Set Dot dulu utk presisi!]\n", retriTouchX, retriTouchY);
         Touch_Tap((int) retriTouchX, (int) retriTouchY, retriHoldMs);
     }
     lastRetriTriggered[i] = true;
@@ -1173,8 +1294,12 @@ static void DoRetriTap(int i, uint64_t now) {
 // tombol Test Tap: verifikasi injeksi sentuhan tanpa perlu nunggu monster
 static void ManualTestTap() {
     printf("[RETRI] manual test tap\n");
-    if (g_retriNativeX >= 0 && g_retriNativeY >= 0) {
-        printf("[RETRI] -> calibrated native (%d,%d)\n", g_retriNativeX, g_retriNativeY);
+    int tnx = -1, tny = -1;
+    if (DotToNative(retriTouchX, retriTouchY, &tnx, &tny)) {
+        printf("[RETRI] -> native(dot %d,%d)\n", tnx, tny);
+        Touch_TapNative(tnx, tny, retriHoldMs);
+    } else if (NativeInPanel(g_retriNativeX, g_retriNativeY)) {
+        printf("[RETRI] -> native(calib %d,%d)\n", g_retriNativeX, g_retriNativeY);
         Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
     } else {
         printf("[RETRI] -> logical (%.0f,%.0f)\n", retriTouchX, retriTouchY);
@@ -1929,7 +2054,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.8 (CD auto-sync + auto retri fix)\n");
+    printf("[+] PANXCZ MLBB v1.9 (screen-map dot->native + verifikasi tap)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -1971,6 +2096,17 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     g_touchInitOk = Touch_Init(displayInfo.width, displayInfo.height, displayInfo.orientation, false) ? 1 : 0;
     if (!g_touchInitOk) printf("[-] Touch_Init FAILED - auto retri & mirror touch tidak aktif!\n");
     LoadCfg();   // muat kalibrasi & pengaturan terakhir (biar minimap/dot ga reset)
+    // Nyaring native calibration stale (dari cfg HP lain/versi lama): kalau di luar
+    // panel sekarang, paksa mapping ulang lewat Set Dot (dot -> native di-solve).
+    if (!NativeInPanel(g_retriNativeX, g_retriNativeY)) {
+        if (g_retriNativeX >= 0 || g_retriNativeY >= 0)
+            printf("[RETRI] native cfg lama (%d,%d) di luar panel skrg - abaikan, pakai Set Dot utk presisi.\n",
+                   g_retriNativeX, g_retriNativeY);
+        g_retriNativeX = g_retriNativeY = -1;
+    } else {
+        printf("[RETRI] native cfg: (%d,%d) (panel %dx%d)\n", g_retriNativeX, g_retriNativeY,
+               Touch_PanelMaxX(), Touch_PanelMaxY());
+    }
     pthread_t volTh;
     if (pthread_create(&volTh, nullptr, VolumeKeyWatcher, nullptr) == 0) {
         pthread_detach(volTh);
@@ -1985,6 +2121,7 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         MonsterRetribution();
         RetriBypassTick();
         CheckAndTriggerRetribution();
+        RetriCheckVerify();   // cek ~500ms setelah tap: retri kena apa ngga
         ApplyDroneView();
         // refresh Room/Player info berkala (~200ms) biar langsung muncul begitu
         // BattleManager ada (loading screen / awal match), ga perlu buka tab dulu
@@ -2000,6 +2137,15 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         if (g_retriLogicalX >= 0.0f) {
             retriTouchX = g_retriLogicalX;
             retriTouchY = g_retriLogicalY;
+            // anchor baru (logical+native dari 1 sentuhan asli) -> mapping di-solve ulang
+            if (NativeInPanel(g_retriNativeX, g_retriNativeY)) {
+                ScreenMapSetAnchor(retriTouchX, retriTouchY, g_retriNativeX, g_retriNativeY);
+                printf("[RETRI] anchor baru: logical(%.0f,%.0f) <-> native(%d,%d) - mapping dot->tap aktif.\n",
+                       retriTouchX, retriTouchY, g_retriNativeX, g_retriNativeY);
+            } else {
+                printf("[RETRI] ⚠ capture native (%d,%d) di luar panel - coba lagi\n",
+                       g_retriNativeX, g_retriNativeY);
+            }
             g_retriLogicalX = -1.0f;
             g_retriLogicalY = -1.0f;
         }

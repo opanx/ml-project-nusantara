@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.8"
+          REL="v1.9"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,13 +70,30 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.8
+      - name: Create pre-release v1.9
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v1.8
-          name: "Panxcz cheat mlbb v1.8 pre release (CD auto-sync + auto retri fix)"
+          tag_name: v1.9
+          name: "Panxcz cheat mlbb v1.9 pre release (screen-map dot->native + verifikasi tap)"
           prerelease: true
           body: |
+            ## Panxcz cheat mlbb v1.9 pre release (screen-map dot->native + verifikasi tap)
+
+            ### 🎯 AKAR MASALAH RETRI "TAP JALAN TAPI GA NGE-CAST" (v1.9)
+            - **Bug utama**: kalibrasi lama nyimpen koordinat `native` mentah di config. Pas user geser dot (X/Y slider), yang ke-tap TETAP native lama → kelihatan "dot udah dipindah tapi retri ga pernah kepencet".
+            - **Fix**: sekarang ada **screen-map** — pas "Set Dot" (ketuk tombol retri ASLI), tool nyimpen pasangan (posisi dot di layar ↔ koordinat panel sentuh). Dari 1 titik itu, 8 kandidat transform (rotasi 90°/mirror) di-solve otomatis. Efeknya **tap SELALU ngikutin posisi dot** yang bisa digeser live pake X/Y → geser dot pas di tombol retri = tap pas di tombol retri.
+            - **Nyaring cfg native stale**: kalau native dari config lama di luar panel device sekarang, otomatis diabaikan + disuruh Set Dot ulang (ga ada lagi koordinat HP lain nyangkut).
+            - **Verifikasi objektif**: abis tiap tap auto-retri, tool baca ulang HP target ~0.5 detik kemudian → console nampilin `✓ HP turun` (retri kena) atau `✗ HP masih sama` (geser dot / retri lagi CD). Ga perlu nebak lagi.
+            - **Tap sintetik makin mirip jari asli**: sekarang ikut ngirim `ABS_MT_PRESSURE` + `ABS_MT_TOUCH_MAJOR` (kalau device asli punya) — biar MTK/game ga nganggep sentuhan sintetik itu "hantu".
+
+            ### Cara test v1.9 (satu sesi, hasil langsung keliatan):
+            1. `su -c "chmod 755 /data/local/tmp/panxcz_mlbb && /data/local/tmp/panxcz_mlbb"` → banner harus `PANXCZ MLBB v1.9`.
+            2. Masuk match, tab Auto Retri → centang Auto Retri (semua target ikut ON).
+            3. **Geser dot (X/Y) sampe lingkaran putih PERSIS nutupin tombol retri di layar.**
+            4. Tombol " Test Tap " → liat console: harus nampilin `✓ HP turun` kalau kena. Kalau `✗ HP masih sama`, geser dot dikit lagi + test lagi (dot sekarang beneran ngontrol titik tap).
+
+            ---
+
             ## Panxcz cheat mlbb v1.8 pre release (CD auto-sync + auto retri fix)
 
             ### 🔧 SKILL CD — DETEKSI OTOMATIS CARA HITUNG GAME (v1.8)
