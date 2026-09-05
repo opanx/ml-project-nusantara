@@ -94,6 +94,7 @@ extern void Touch_TapNative(int x, int y, int holdMs);
 extern bool Touch_Busy();
 extern int  Touch_PanelMaxX();
 extern int  Touch_PanelMaxY();
+extern long long g_realTouchDowns;   // telemetri: sentuhan asli diterima ImGui
 
 // diagnostics touch (dari TouchHelperA - buat debug kenapa tap ga nyampe)
 extern bool g_touchDebugLog;
@@ -339,6 +340,22 @@ static int ReadDictIntKeys(uintptr_t dic, int* out, int maxOut) {
         if (key) out[n++] = key;
     }
     return n;
+}
+
+// Anti-numpuk panel skill CD: kalau posisi hero di layar mepet sama hero lain
+// (cluster fight / war), panel CD hero berikutnya di-skip biar tulisan ga
+// numpuk jadi gado-gado. Dibersihin tiap frame sebelum loop player.
+static float s_cdPx[10];
+static float s_cdPy[10];
+static int   s_cdPn = 0;
+static bool CdPanelOverlap(float hx, float hy) {
+    if (s_cdPn >= 10) return true;   // kebanyakan panel di layar
+    for (int q = 0; q < s_cdPn; q++)
+        if (fabsf(s_cdPx[q] - hx) < 150.0f && fabsf(s_cdPy[q] - hy) < 95.0f) return true;
+    s_cdPx[s_cdPn] = hx;
+    s_cdPy[s_cdPn] = hy;
+    s_cdPn++;
+    return false;
 }
 
 void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
@@ -726,6 +743,7 @@ void DrawMonster(ImDrawList *Draw) {
 
     long player = getPtr641(getPtr641(a32+m_ShowPlayers)+0x10)+0x20;
     uint stop_player = Read<uint>(getPtr641(a32+m_ShowPlayers)+0x18);
+    s_cdPn = 0;   // reset anti-numpuk panel CD tiap frame
     
     for (int i = 0; i < stop_player; i++) {
         auto Objaddr = getPtr641(player + ((i << 3) / 1));
@@ -851,7 +869,7 @@ void DrawMonster(ImDrawList *Draw) {
                 dl->AddRectFilled(ImVec2(px, py), ImVec2(px + bw * mf, py + 5), IM_COL32(70, 150, 255, 255), 2);
                 py += 11.0f;
             }
-            if (drawMSkillCD) {
+            if (drawMSkillCD && !CdPanelOverlap(HeroPos.X, HeroPos.Y)) {
                 // Skill CD — kolom terpisah di KANAN panel info. State-nya udah di-poll
                 // tiap frame di atas (cdReady/cdRemain) utk SEMUA hero. Biar ga berantakan,
                 // cuma skill yg LAGI CD yg ditampilkan (label merah + dot + angka mundur);
@@ -2054,7 +2072,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.9 (screen-map dot->native + verifikasi tap)\n");
+    printf("[+] PANXCZ MLBB v1.10 (revert tap pressure + anti-numpuk CD + telemetri sentuh)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -2127,10 +2145,10 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         // BattleManager ada (loading screen / awal match), ga perlu buka tab dulu
         if ((++roomTick % 200) == 0) RefreshRoomInfo();
         if (g_touchDebugLog && (++dbgTick % 1500) == 0)
-            printf("[DBG] touch ok=%d fd=%d dev=[%s] tap=%lldB mirror=%lldB fails=%lld err=%d | BM=0x%llx players B%d R%d monsters=%d retri=%d camp=%d\n",
+            printf("[DBG] touch ok=%d fd=%d dev=[%s] tap=%lldB mirror=%lldB fails=%lld err=%d realtouch=%lld | BM=0x%llx players B%d R%d monsters=%d retri=%d camp=%d\n",
                    g_touchInitOk, g_touchFdCount, g_touchDevName[0] ? g_touchDevName : "?",
                    (long long) g_touchTapBytes, (long long) g_touchMirrorBytes,
-                   (long long) g_touchTapFails, g_touchLastErr,
+                   (long long) g_touchTapFails, g_touchLastErr, g_realTouchDowns,
                    (unsigned long long) g_roomBM, g_roomBlueN, g_roomRedN, MonsterCount,
                    autoRetribution ? 1 : 0, g_roomMyCamp);
         // hasil kalibrasi 1-tap: gerakkan dot marker ke posisi logical yang sama

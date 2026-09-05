@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.9"
+          REL="v1.10"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,13 +70,22 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.9
+      - name: Create pre-release v1.10
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v1.9
-          name: "Panxcz cheat mlbb v1.9 pre release (screen-map dot->native + verifikasi tap)"
+          tag_name: v1.10
+          name: "Panxcz cheat mlbb v1.10 pre release (fix menu touch + anti-numpuk CD)"
           prerelease: true
           body: |
+            ## Panxcz cheat mlbb v1.10 pre release (fix menu touch + anti-numpuk CD)
+
+            ### 🖐️ MENU GA BISA DISENTUH DI v1.9? INI HOTFIX (v1.10)
+            - **v1.9 nyoba nambahin `ABS_MT_PRESSURE`/`TOUCH_MAJOR`** di tap sintetik (percobaan biar MTK ga nganggap tap hantu) — ternyata bikin **menu jadi ga bisa disentuh** di device lo. **Di-revert total** di v1.10 → balik ke format tap v1.8 yang terbukti.
+            - **Telemetri sentuhan asli**: sekarang console nampilin `realtouch=N` di baris DBG + print sekali `sentuhan asli diterima -> ImGui bisa di-klik` pas jari pertama nyentuh layar. Kalau menu masih ga bisa disentuh di v1.10, baris ini nentuin masalahnya di jalur mana: `realtouch` nambah tapi menu mati = masalah di ImGui; `realtouch` tetap 0 = masalah di grab/read device.
+            - **Anti-numpuk tulisan CD**: pas war/cluster, panel skill CD (S1/S2/ULT + angka) hero yang posisinya mepet sekarang di-skip → tulisan ga numpuk jadi gado-gado.
+
+            ---
+
             ## Panxcz cheat mlbb v1.9 pre release (screen-map dot->native + verifikasi tap)
 
             ### 🎯 AKAR MASALAH RETRI "TAP JALAN TAPI GA NGE-CAST" (v1.9)

@@ -27,14 +27,17 @@ int  g_retriNativeY = -1;
 float g_retriLogicalX = -1.0f;
 float g_retriLogicalY = -1.0f;
 
-// Ukuran panel sentuh asli (native max X/Y) + kapabilitas pressure/touch-major.
-// Dipakai main.cpp utk mapping dot -> native (Touch_PanelMaxX/Y) dan utk
-// nyusun event tap sintetik yg mirip stream asli (pressure/major).
+// Ukuran panel sentuh asli (native max X/Y). Dipakai main.cpp utk mapping
+// dot -> native (Touch_PanelMaxX/Y).
 static int s_panelMaxX = 0, s_panelMaxY = 0;
-static int s_hasPress = 0, s_pressMax = 255;
-static int s_hasMajor = 0, s_majorMax = 255;
 int Touch_PanelMaxX() { return s_panelMaxX; }
 int Touch_PanelMaxY() { return s_panelMaxY; }
+
+// Telemetri sentuhan asli (real finger -> ImGui). Dipakai diagnosa kalau
+// menu ga bisa di-klik: kalau counter ini nambah = input nyampe, masalahnya
+// di sisi ImGui/kordinat; kalau 0 = jalur grab/read mati.
+long long g_realTouchDowns = 0;
+bool  g_realTouchLogged = false;
 
 // Diagnostics touch (dibaca UI utk debug)
 bool g_touchDebugLog = true;
@@ -119,18 +122,10 @@ static void SendTapUp();   // forward decl (dipakai SendTapDown)
 static void SendTapDown(int nx, int ny) {
     if (!Touch_initialized || nowfd <= 0) return;
     if (g_synDown) SendTapUp();
-    struct input_event ev[14];
+    struct input_event ev[10];
     int c = 0;
     ev[c++] = {EV_ABS, ABS_MT_SLOT, SYN_SLOT};
     ev[c++] = {EV_ABS, ABS_MT_TRACKING_ID, SYN_TRACKING};
-    // MTK/beberapa stack input butuh pressure/touch-major (stream asli selalu
-    // ngirim ini). Kirim juga biar tap sintetik ga kelihatan "hantu" (di-filter
-    // game/trusted-touch). Cuma kalau device asli punya bit-nya (kalau ga punya,
-    // event ABS yg ga terdaftar bakal bikin kernel tolak SEMUA batch).
-    if (s_hasMajor)
-        ev[c++] = {EV_ABS, ABS_MT_TOUCH_MAJOR, s_majorMax > 30 ? s_majorMax / 3 : 8};
-    if (s_hasPress)
-        ev[c++] = {EV_ABS, ABS_MT_PRESSURE, s_pressMax > 30 ? s_pressMax * 7 / 10 : 80};
     ev[c++] = {EV_ABS, ABS_MT_POSITION_X, nx};
     ev[c++] = {EV_ABS, ABS_MT_POSITION_Y, ny};
     ev[c++] = {EV_ABS, ABS_X, nx};
@@ -322,6 +317,11 @@ static void *TypeA(void *arg) {
                     io.MousePos = {x, y};
                     // LOGD("final %d %.1f %.1f\n", other_touch, x, y);
                     io.MouseDown[0] = true;
+                    g_realTouchDowns++;
+                    if (!g_realTouchLogged) {
+                        g_realTouchLogged = true;
+                        printf("[TOUCH] sentuhan asli diterima -> ImGui bisa di-klik (x=%.0f y=%.0f)\n", x, y);
+                    }
                     // Kalibrasi 1-tap: simpan posisi native + logical sentuhan asli ini
                     if (g_retriCapture) {
                         g_retriNativeX = Finger[i][latest].x;
@@ -465,16 +465,10 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
                     char nm[64] = "";
                     if (ioctl(fd, EVIOCGNAME(sizeof(nm) - 1), nm) >= 0)
                         strncpy(g_touchDevName, nm, sizeof(g_touchDevName) - 1);
-                                    screenX = absX[0].maximum;
+                    screenX = absX[0].maximum;
                     screenY = absY[0].maximum;
                     s_panelMaxX = screenX;
                     s_panelMaxY = screenY;
-                    // deteksi pressure / touch-major (opsional, sesuai device asli)
-                    struct input_absinfo pma;
-                    s_hasPress = (ioctl(fd, EVIOCGABS(ABS_MT_PRESSURE), &pma) == 0 && pma.maximum > pma.minimum) ? 1 : 0;
-                    if (s_hasPress) s_pressMax = pma.maximum;
-                    s_hasMajor = (ioctl(fd, EVIOCGABS(ABS_MT_TOUCH_MAJOR), &pma) == 0 && pma.maximum > pma.minimum) ? 1 : 0;
-                    if (s_hasMajor) s_majorMax = pma.maximum;
                 }
                 origfd[fdNum] = fd;
                 fdNum++;
