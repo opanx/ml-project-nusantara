@@ -224,7 +224,7 @@ void ApplyDroneView() {
 // skill CD musuh: ShowCoolDownComp(ShowEntity+0xf8) -> _dicCD(0x18) Dictionary<Int32,CoolDownData>
 // slotReady[]: 3 slot (S1, S2, ULT) — true kalau ready; slotCd[]: sisa detik
 //
-// ===== SINKRONISASI v1.7 =====
+// ===== SINKRONISASI v1.8 =====
 // Kebenaran datang dari GAME sendiri, bukan tebakan:
 //   - _dicCD cuma berisi skill yg SEDANG CD (AddCD pas skill dipake, RemoveCD pas kelar).
 //     Jadi entry ADA di dictionary == skill lagi CD.
@@ -234,7 +234,17 @@ void ApplyDroneView() {
 //   - Fungsi ini DIPANGGIL TIAP FRAME UNTUK SEMUA HERO YG HIDUP (bukan cuma yg lagi di
 //     layar), jadi anchor selalu ke-set pas skill dipake di mana pun hero berada -> angka
 //     CD turun bareng CD asli & dot balik hijau pas game hapus entry (CD kelar).
-struct CdAnchor { uintptr_t entity; int spell; uint32_t start; uint64_t wallMs; };
+struct CdAnchor {
+    uintptr_t entity;
+    int spell;
+    uint32_t start;
+    uint64_t wallMs;     // wall-clock anchor (saat CD mulai terlihat / recast)
+    uint32_t cool;       // uiCoolTime terakhir (durasi atau sisa, tergantung mode)
+    uint32_t prevCool;   // uiCoolTime frame sebelumnya (deteksi field live / tetap)
+    uint64_t prevWall;   // wall-clock frame sebelumnya
+    bool live;           // true = uiCoolTime itu sisa CD yg di-update game tiap frame
+    bool seen;           // udah dipoll 2x (syarat deteksi live)
+};
 static CdAnchor g_cdAnchor[96];
 static int g_cdAnchorN = 0;
 
@@ -250,8 +260,10 @@ static int CdFind(uintptr_t entity, int spell) {
     return -1;
 }
 
-// helper: set/update anchor. Kalau startTime beda (skill dipake ulang) -> reset hitung mundur.
-static void CdSet(uintptr_t entity, int spell, uint32_t start, uint64_t nowMs) {
+// helper: set/update anchor. startTime berubah BESAR (>=100ms) = skill dipake ulang
+// -> reset hitung mundur. Perubahan kecil (drift / field yang live di-update) ga di-reset
+// biar countdown ga ke-restart tiap frame.
+static void CdSet(uintptr_t entity, int spell, uint32_t start, uint32_t cool, uint64_t nowMs) {
     int ai = CdFind(entity, spell);
     if (ai < 0) {
         if (g_cdAnchorN < 96) ai = g_cdAnchorN++;
@@ -265,9 +277,23 @@ static void CdSet(uintptr_t entity, int spell, uint32_t start, uint64_t nowMs) {
         g_cdAnchor[ai].spell = spell;
         g_cdAnchor[ai].start = start;
         g_cdAnchor[ai].wallMs = nowMs;
-    } else if (g_cdAnchor[ai].start != start) {
-        g_cdAnchor[ai].start = start;
-        g_cdAnchor[ai].wallMs = nowMs;
+        g_cdAnchor[ai].cool = cool;
+        g_cdAnchor[ai].prevCool = 0;
+        g_cdAnchor[ai].prevWall = 0;
+        g_cdAnchor[ai].live = false;
+        g_cdAnchor[ai].seen = false;
+    } else {
+        uint32_t d = (start > g_cdAnchor[ai].start) ? (start - g_cdAnchor[ai].start)
+                                                     : (g_cdAnchor[ai].start - start);
+        if (d >= 100) {   // skill dipake ulang (start loncat jauh)
+            g_cdAnchor[ai].start = start;
+            g_cdAnchor[ai].wallMs = nowMs;
+            g_cdAnchor[ai].cool = cool;
+            g_cdAnchor[ai].prevCool = 0;
+            g_cdAnchor[ai].prevWall = 0;
+            g_cdAnchor[ai].live = false;
+            g_cdAnchor[ai].seen = false;
+        }
     }
 }
 
@@ -368,12 +394,34 @@ void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
         uint32_t startTime = Read<uint32_t>(cd + 0x1c); // uiStartTime (jam internal game)
 
         // pasang/update anchor -> pas entry pertama kelihatan, anchor = momen skill dipake
-        CdSet(entity, spellID, startTime, nowMs);
+        CdSet(entity, spellID, startTime, coolTime, nowMs);
         int ai = CdFind(entity, spellID);
         if (ai < 0) continue;
+        CdAnchor &A = g_cdAnchor[ai];
+        A.cool = coolTime;   // pakai durasi/sisa terbaru (CDR/time-lapse ikut kebaca)
 
-        uint64_t elapsedMs = nowMs - g_cdAnchor[ai].wallMs;
-        uint32_t remain = (elapsedMs >= coolTime) ? 0 : (uint32_t)(coolTime - elapsedMs);
+        uint32_t remain;
+        if (A.live) {
+            // uiCoolTime = sisa yg di-update game tiap frame -> pakai langsung
+            remain = A.cool;
+        } else {
+            // uiCoolTime = durasi tetap -> sisa = durasi - elapsed sejak anchor
+            uint64_t elapsedMs = nowMs - A.wallMs;
+            remain = (elapsedMs >= A.cool) ? 0 : (uint32_t)(A.cool - elapsedMs);
+            // deteksi otomatis: kalau uiCoolTime turun seiring wall-clock tiap poll,
+            // berarti field-nya live (bukan durasi tetap) -> switch ke mode live.
+            if (A.seen) {
+                int64_t dt    = (int64_t)(nowMs - A.prevWall);
+                int64_t dCool = (int64_t)A.prevCool - (int64_t)coolTime;
+                if (dt >= 5 && dt <= 500 && dCool >= dt / 2 && dCool <= dt * 2) {
+                    A.live = true;
+                    remain = coolTime;
+                }
+            }
+            A.prevWall = nowMs;
+            A.prevCool = coolTime;
+            A.seen = true;
+        }
         // Entry MASIH ADA di _dicCD -> game masih nganggap skill ini CD. Kalau anchor telat
         // (mis. tool baru dinyalain pas CD udah jalan) dan sisa kelewat 0, tampilkan 1 dtk
         // minimal — dot tetap merah sampe entry beneran ilang (ga restart penuh lagi).
@@ -1089,11 +1137,21 @@ static void RetriBypassTick() {
     int rc = RC::Install(pid, cfg);
     g_retriDirectReady = (rc == RC::RC_OK);
     g_retriBypassPlayer = Oneself;
-    if (!g_retriDirectReady) g_retriInstallFails++;
-    else g_retriInstallFails = 0;
-    printf("[RETRI] direct-call bypass: %s (rc=%d, try#%d)%s\n",
-           g_retriDirectReady ? "INSTALLED" : "FAILED", rc, g_retriInstallFails,
-           g_retriDirectReady ? "" : RC::ErrStr());
+    if (g_retriDirectReady) {
+        g_retriInstallFails = 0;
+        printf("[RETRI] direct-call bypass INSTALLED ✓\n");
+    } else {
+        g_retriInstallFails++;
+        // print cuma 2 percobaan pertama (anti spam), lalu auto-disable kalau device
+        // emang ga mendukung (ga ada region exec yg bisa ditulis) -> fallback touch.
+        if (g_retriInstallFails <= 2)
+            printf("[RETRI] direct-call bypass FAILED (rc=%d, try#%d) %s\n", rc, g_retriInstallFails, RC::ErrStr());
+        if (g_retriInstallFails >= 3) {
+            g_retriDirect = false;
+            printf("[RETRI] Direct call tidak didukung device ini (%d gagal: %s) - fallback TOUCH otomatis.\n",
+                   g_retriInstallFails, RC::ErrStr());
+        }
+    }
 }
 
 static void DoRetriTap(int i, uint64_t now) {
@@ -1130,6 +1188,11 @@ static bool RetriEligible(int i, int retriDmg) {
     if (monster[i].distance > retriMaxDist) return false;
     if (monster[i].health > retriDmg) return false;
     int id = Read<int>(monster[i].address + 0x18c);
+    // kalau Auto Retri ON tapi ga ada satu pun target yg dicentang (mis. sisa cfg lama),
+    // anggap semua target aktif — biar ga keliatan "dinyalain tapi ga kerja".
+    bool anyType = AutoRetributionLord || AutoRetributionTurtle || AutoRetributionBlue ||
+                   AutoRetributionLito || AutoRetributionCrab || AutoRetributionRed;
+    if (!anyType) return true;
     if (AutoRetributionLord && (id == 2002)) return true;
     if (AutoRetributionTurtle && (id == 2003)) return true;
     if (AutoRetributionBlue && (id == 2005)) return true;
@@ -1435,7 +1498,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v1.7");
+    ImGui::TextDisabled("MLBB v1.8");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1493,7 +1556,14 @@ void Layout_tick_UI() {
 
         if (ImGui::BeginTabItem(TR("Auto Retri", "Auto Retri"))) {
             SectionHeader(TR("Auto Retribution", "Auto Retri"));
+            bool retriPrev = autoRetribution;
             ImGui::Checkbox(TR("Enable Auto Retri", "Aktifkan Auto Retri"), &autoRetribution);
+            if (autoRetribution && !retriPrev) {
+                // main toggle ON -> nyalain semua target sekaligus, biar ga
+                // "dinyalain tapi ga ngapa-ngapain" (semua subtype default mati).
+                AutoRetributionRed = AutoRetributionBlue = AutoRetributionLord =
+                    AutoRetributionTurtle = AutoRetributionCrab = AutoRetributionLito = true;
+            }
 
             ImGui::Spacing();
             SectionHeader(TR("Direct Call (Bypass)", "Direct Call (Bypass)"));
@@ -1859,7 +1929,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.7 (skill CD sync + ESP bersih)\n");
+    printf("[+] PANXCZ MLBB v1.8 (CD auto-sync + auto retri fix)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");

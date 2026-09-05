@@ -19,10 +19,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Android SDK + NDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Install NDK r21
         run: |
@@ -48,7 +48,7 @@ jobs:
           ls -la release/ || true
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: panxcz-mlbb
           path: release/
@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.7"
+          REL="v1.8"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,25 +70,39 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.7
-        uses: softprops/action-gh-release@v2
+      - name: Create pre-release v1.8
+        uses: softprops/action-gh-release@v3
         with:
-          tag_name: v1.7
-          name: "Panxcz cheat mlbb v1.7 pre release (skill CD sync)"
+          tag_name: v1.8
+          name: "Panxcz cheat mlbb v1.8 pre release (CD auto-sync + auto retri fix)"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v1.7 pre release (skill CD sync)
+            ## Panxcz cheat mlbb v1.8 pre release (CD auto-sync + auto retri fix)
 
-            ### 🔧 SKILL CD — ANGKA SEKARANG SINKRON SAMA CD ASLI (v1.7)
-            - **Akar masalah sync**: CD cuma di-poll pas hero LAGI DI LAYAR. Kalau musuh make skill di luar layar (lane lain/jungle), anchor baru kepasang pas hero kelihatan → angkanya ngambang & ga nyambung sama CD asli.
-            - **Fix**: CD sekarang di-poll TIAP FRAME utk SEMUA hero yg hidup (di mana pun posisinya) → anchor ke-set pas skill beneran dipake, angka mundur bareng CD asli.
-            - **Hapus bug restart penuh**: ada hack lama yg bikin angka CD balik ke nilai penuh / nyangkut di angka gede pas anchor telat. Sekarang kalau entry masih ada di dictionary = masih CD (sumber kebenaran dari game sendiri: AddCD pas dipake, RemoveCD pas kelar).
-            - **Dot balik hijau pas CD kelar** — berdasarkan entry beneran ilang dari dictionary game, bukan tebakan timer.
-            - **Tampilan dibersihin**: cuma skill yg LAGI CD yg ditampilkan (label merah S1/S2/ULT + dot + angka mundur). Skill ready cuma dot kecil redup — ga ada lagi teks/angka nyangkut yg bikin bingung di sekitar hero.
+            ### 🔧 SKILL CD — DETEKSI OTOMATIS CARA HITUNG GAME (v1.8)
+            - **Angka CD sekarang sinkron otomatis**: ada game/ROM yg ngisi `uiCoolTime` sebagai DURASI tetap (sisa = durasi - elapsed), ada juga yg ngisi SISA yg di-update tiap frame (sisa = field langsung). Sebelumnya kode cuma punya satu cara hitung → angka turun dobel-cepet / nyangkut di 1 / ga nyambung sama CD asli.
+            - **Fix**: deteksi otomatis dari 2 poll beruntun — kalau `uiCoolTime` turun seiring wall-clock (kecepatan sama), tool otomatis pakai mode live; kalau konstan, pakai mode durasi-fixed. Nggak ada lagi angka ngawur.
+            - **Anchor anti-restart**: `uiStartTime` yang berubah kecil (drift) ga bikin countdown restart; baru di-reset kalau start loncat jauh (skill beneran dipake ulang).
 
-            ### HOTFIX SEBELUMNYA (v1.6) — RETRI TOUCH DITOLAK SISTEM (errno=38 ENOSYS)
-            - Watchdog re-disable `block_untrusted_touches` tiap 1.5s + retry tap 1x + counter `tap fails` live di UI.
-            - Direct call: install SEKALI per match (backoff 5s→30s kalau gagal) + fallback install via PTRACE poke di ROM tanpa region RWX.
+            ### ⚡ AUTO RETRI — SEKARANG LANGSUNG KERJA (v1.8)
+            - **Bug**: toggle utama "Aktifkan Auto Retri" ON tapi semua target (Lord/Turtle/Crab/Buff/Lito) default MATI → tool keliatan nyala tapi ga ngapa-ngapain.
+            - **Fix 1**: centang Auto Retri → semua target otomatis ikut ON.
+            - **Fix 2**: kalau ternyata ga ada satu pun target yg aktif (sisa cfg lama), semua target dianggap aktif → auto retri tetep jalan.
+
+            ### 🛡️ DIRECT CALL — GA SPAM LAGI + AUTO-FALLBACK TOUCH (v1.8)
+            - Gagal install cuma di-print 2x, abis itu **otomatis mati + pesan sekali** kalau device ga mendukung (ga ada region exec yg bisa ditulis). Sisanya auto retri pakai touch yg udah jalan.
+
+            ### 🧹 LAINNYA (v1.8)
+            - Spam `[ANWC] NOT FOUND ...` di console dihilangkan (tetap ke logcat) — console bersih.
+            - Actions di-upgrade (checkout v7, setup-android v4, upload-artifact v7, gh-release v3) — hilangkan warning Node 20 deprecated.
+
+            ### HOTFIX SEBELUMNYA (v1.7) — SKILL CD DI-POLL SEMUA HERO
+            - CD di-poll tiap frame utk SEMUA hero hidup (bukan cuma di layar) → anchor ke-set pas skill dipake di mana pun.
+            - Hapus bug restart-penuh; dot balik hijau pas entry ilang dari dictionary game.
+
+            ### HOTFIX (v1.6) — RETRI TOUCH DITOLAK SISTEM (errno=38 ENOSYS)
+            - Watchdog re-disable `block_untrusted_touches` tiap 1.5s + retry tap + counter `fails` live.
+            - Direct call: install sekali per match (backoff) + fallback PTRACE poke di ROM tanpa RWX.
 
             ### 🛡️ DIRECT CALL BYPASS (v1.5)
             - Engine `RemoteCall.h`: panggil cast retri langsung di proses game via signal trampoline (tanpa ptrace saat main, tanpa patch .so, tanpa thread baru). Detail: **BYPASS.md**.
