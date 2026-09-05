@@ -101,6 +101,7 @@ extern long long g_touchMirrorWrites;
 extern long long g_touchMirrorBytes;
 extern long long g_touchTapWrites;
 extern long long g_touchTapBytes;
+extern long long g_touchTapFails;
 extern int  g_touchLastErr;
 extern char g_touchDevName[64];
 
@@ -441,6 +442,8 @@ float retriJungleMult = 1.0f;  // pengali damage utk monster (item jungle/blessi
 bool g_retriDirect = false;         // UI toggle: pakai direct call (bypass)
 static bool g_retriDirectReady = false;
 static uintptr_t g_retriBypassPlayer = 0; // Oneself yg terakhir di-bake ke trampoline
+static uint64_t g_retriInstallTick = 0;   // anti-spam: kapan terakhir nyoba install
+static int g_retriInstallFails = 0;       // gagal beruntun (backoff makin lama)
 
 static uint64_t NowMs() {
     using namespace std::chrono;
@@ -990,7 +993,9 @@ int CalculateRetriDamage(int Level) {
     return 750 + 150 * Level;
 }
 
-// install/refresh bypass tiap ganti match (Oneself berubah) & uninstall kalau toggle off
+// install/refresh bypass tiap ganti match (Oneself berubah) & uninstall kalau toggle off.
+// ANTI-SPAM: kalau gagal, tunggu makin lama (5s -> 10s -> 20s -> 30s max), jangan
+// nyoba tiap frame (log banjir + attach ptrace berulang = risiko anti-cheat).
 static void RetriBypassTick() {
     if (!g_retriDirect) {
         if (g_retriDirectReady) {
@@ -998,11 +1003,25 @@ static void RetriBypassTick() {
             g_retriDirectReady = false;
             printf("[RETRI] direct-call bypass uninstalled\n");
         }
+        g_retriInstallFails = 0;
         return;
     }
     if (!Oneself || pid <= 0) return;
     if (g_retriDirectReady && Oneself == g_retriBypassPlayer) return;
-    if (g_retriDirectReady) RC::Uninstall(pid);
+    // backoff: 5s -> 10s -> 20s -> 30s (max)
+    uint64_t waitMs = 5000;
+    if (g_retriInstallFails > 3) waitMs = 30000;
+    else if (g_retriInstallFails > 1) waitMs = 20000;
+    else if (g_retriInstallFails > 0) waitMs = 10000;
+    if (g_retriDirectReady && Oneself != g_retriBypassPlayer) {
+        RC::Uninstall(pid);
+        g_retriDirectReady = false;
+        g_retriInstallFails = 0;  // ganti match = reset backoff
+        waitMs = 500;
+    }
+    if (NowMs() - g_retriInstallTick < waitMs) return;
+    g_retriInstallTick = NowMs();
+
     RC::Cfg cfg;
     cfg.context    = 0;                      // 'this' -> 0 (default; ganti kalau fungsi butuh instance)
     cfg.playerAddr = Oneself;                // sumber m_iSummonSkillId
@@ -1012,8 +1031,10 @@ static void RetriBypassTick() {
     int rc = RC::Install(pid, cfg);
     g_retriDirectReady = (rc == RC::RC_OK);
     g_retriBypassPlayer = Oneself;
-    printf("[RETRI] direct-call bypass: %s (rc=%d)%s\n",
-           g_retriDirectReady ? "INSTALLED" : "FAILED", rc,
+    if (!g_retriDirectReady) g_retriInstallFails++;
+    else g_retriInstallFails = 0;
+    printf("[RETRI] direct-call bypass: %s (rc=%d, try#%d)%s\n",
+           g_retriDirectReady ? "INSTALLED" : "FAILED", rc, g_retriInstallFails,
            g_retriDirectReady ? "" : RC::ErrStr());
 }
 
@@ -1356,7 +1377,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v1.5");
+    ImGui::TextDisabled("MLBB v1.6");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1458,13 +1479,19 @@ void Layout_tick_UI() {
             const char *st = !g_touchInitOk ? "FAILED" : (g_touchFdCount > 0 ? "OK" : "NO DEVICE");
             ImGui::TextColored(g_touchInitOk && g_touchFdCount > 0 ? ImColor(120, 255, 160, 255) : ImColor(255, 120, 120, 255),
                 "Touch: %s | dev: %s (%d)", st, g_touchDevName[0] ? g_touchDevName : "?", g_touchFdCount);
+            if (g_touchTapFails > 0) {
+                ImGui::TextColored(ImColor(255, 120, 120, 255),
+                    TR("Tap DITOLAK %lldx (errno %d) - watchdog anti-block aktif", "Tap DITOLAK %lldx (errno %d) - watchdog anti-block aktif"),
+                    (long long) g_touchTapFails, g_touchLastErr);
+            }
             if (g_touchLastErr) {
                 ImGui::TextColored(ImColor(255, 180, 60, 255),
                     TR("Last write error: errno %d - sentuhan ditolak sistem!", "Error write terakhir: errno %d - sentuhan ditolak sistem!"), g_touchLastErr);
             } else {
-                ImGui::TextDisabled("Inject: %lld tap-batch (%lld B) | mirror %lld batch (%lld B)",
+                ImGui::TextDisabled("Inject: %lld tap-batch (%lld B) | mirror %lld batch (%lld B) | fails %lld",
                                     (long long) g_touchTapWrites, (long long) g_touchTapBytes,
-                                    (long long) g_touchMirrorWrites, (long long) g_touchMirrorBytes);
+                                    (long long) g_touchMirrorWrites, (long long) g_touchMirrorBytes,
+                                    (long long) g_touchTapFails);
             }
             ImGui::Checkbox(TR("Verbose touch log (console)", "Log touch detail (console)"), &g_touchDebugLog);
 
@@ -1774,7 +1801,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.5 (Direct Call bypass)\n");
+    printf("[+] PANXCZ MLBB v1.6 (touch anti-block watchdog)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -1835,9 +1862,10 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         // BattleManager ada (loading screen / awal match), ga perlu buka tab dulu
         if ((++roomTick % 200) == 0) RefreshRoomInfo();
         if (g_touchDebugLog && (++dbgTick % 1500) == 0)
-            printf("[DBG] touch ok=%d fd=%d dev=[%s] tap=%lldB mirror=%lldB err=%d | BM=0x%llx players B%d R%d monsters=%d retri=%d camp=%d\n",
+            printf("[DBG] touch ok=%d fd=%d dev=[%s] tap=%lldB mirror=%lldB fails=%lld err=%d | BM=0x%llx players B%d R%d monsters=%d retri=%d camp=%d\n",
                    g_touchInitOk, g_touchFdCount, g_touchDevName[0] ? g_touchDevName : "?",
-                   (long long) g_touchTapBytes, (long long) g_touchMirrorBytes, g_touchLastErr,
+                   (long long) g_touchTapBytes, (long long) g_touchMirrorBytes,
+                   (long long) g_touchTapFails, g_touchLastErr,
                    (unsigned long long) g_roomBM, g_roomBlueN, g_roomRedN, MonsterCount,
                    autoRetribution ? 1 : 0, g_roomMyCamp);
         // hasil kalibrasi 1-tap: gerakkan dot marker ke posisi logical yang sama

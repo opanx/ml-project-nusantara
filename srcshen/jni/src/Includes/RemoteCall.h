@@ -124,8 +124,9 @@ struct RC_Regs {
 static int         s_pid       = 0;
 static bool        s_installed = false;
 static int         s_sig       = RC_SIG;
+static bool        s_usePoke   = false;  // stub region not writable -> ptrace poke
 static uintptr_t   s_base      = 0;   // trampoline region base (in game)
-static uintptr_t   s_jit       = 0;   // game JIT region we borrowed
+static uintptr_t   s_jit       = 0;   // game region we borrowed (rwxp or r-xp)
 static uint8_t     s_orig[RC_STUB_TOTAL];
 static char        s_err[192]  = "idle";
 
@@ -213,31 +214,67 @@ static bool RC_RunStub(int pid, const RC_Regs& in, RC_Regs* out, int ms) {
 }
 
 // ---------------------------------------------------------------------------
-// find the game's existing writable+executable region (ART JIT code cache)
+// find a usable executable region in the game:
+//   pass 1: rwxp (ART JIT code cache - writable, process_vm_writev works)
+//   pass 2: r-xp (read+exec, anonymous or JIT-named) -> written via PTRACE poke
+//   pass 3: any r-xp (last resort, experimental)
 // ---------------------------------------------------------------------------
-static bool RC_FindRWX(int pid, uintptr_t* outStart, size_t* outSize) {
+static bool RC_FindExecRegion(int pid, uintptr_t* outStart, size_t* outSize, bool* outWritable) {
     char path[64];
     snprintf(path, sizeof(path), "/proc/%d/maps", pid);
     FILE* fp = fopen(path, "r");
     if (!fp) { SetErr("cannot open maps"); return false; }
     char line[512];
-    bool found = false;
+    uintptr_t candW[3] = {0}; size_t candWSz[3] = {0}; int nW = 0;   // rwxp
+    uintptr_t candR[3] = {0}; size_t candRSz[3] = {0}; int nR = 0;   // r-xp anonymous/jit
+    uintptr_t candA[3] = {0}; size_t candASz[3] = {0}; int nA = 0;   // any r-xp
     while (fgets(line, sizeof(line), fp)) {
-        // perms like: rwxp  (executable + writable)
         if (!(line[0] >= '0' && line[0] <= '9')) continue;
         const char* p = strchr(line, ' ');
-        if (!p || p[1] != 'r' || p[2] != 'w' || p[3] != 'x') continue;
+        if (!p) continue;
+        bool r = p[1] == 'r', w = p[2] == 'w', x = p[3] == 'x';
+        if (!r || !x) continue;
         uintptr_t a = 0, b = 0;
-        if (sscanf(line, "%lx-%lx", &a, &b) == 2 && b > a + RC_STUB_TOTAL) {
-            *outStart = a;
-            *outSize  = (size_t)(b - a);
-            found = true;
-            break;
+        if (sscanf(line, "%lx-%lx", &a, &b) != 2 || b <= a + RC_STUB_TOTAL) continue;
+        if (w) {
+            if (nW < 3) { candW[nW] = a; candWSz[nW] = (size_t)(b - a); nW++; }
+            continue;
         }
+        // r-xp: prefer anonymous or JIT-ish, else any
+        const char* name = strchr(line + 5, '/');
+        bool anon = (name == nullptr) || strstr(line, "[anon:") || strstr(line, "jit") ||
+                    strstr(line, "code-cache") || strstr(line, "dalvik");
+        if (anon && nR < 3) { candR[nR] = a; candRSz[nR] = (size_t)(b - a); nR++; }
+        else if (nA < 3) { candA[nA] = a; candASz[nA] = (size_t)(b - a); nA++; }
     }
     fclose(fp);
-    if (!found) SetErr("no rwxp region (no JIT?)");
-    return found;
+    if (nW > 0) { *outStart = candW[0]; *outSize = candWSz[0]; *outWritable = true; return true; }
+    if (nR > 0) { *outStart = candR[0]; *outSize = candRSz[0]; *outWritable = false; return true; }
+    if (nA > 0) { *outStart = candA[0]; *outSize = candASz[0]; *outWritable = false; return true; }
+    SetErr("no executable region found");
+    return false;
+}
+
+// ptrace word access for RX regions (PEEKDATA/POKEDATA bypass page permissions)
+static bool RC_PokeRead(int pid, uintptr_t addr, void* buf, size_t len) {
+    uint8_t* out = (uint8_t*)buf;
+    for (size_t off = 0; off < len; off += 8) {
+        errno = 0;
+        long v = ptrace(PTRACE_PEEKDATA, pid, (void*)(addr + off), 0);
+        if (v == -1 && errno != 0) return false;
+        memcpy(out + off, &v, 8);
+    }
+    return true;
+}
+
+static bool RC_PokeWrite(int pid, uintptr_t addr, const void* buf, size_t len) {
+    const uint8_t* in = (const uint8_t*)buf;
+    for (size_t off = 0; off < len; off += 8) {
+        long v = 0;
+        memcpy(&v, in + off, 8);
+        if (ptrace(PTRACE_POKEDATA, pid, (void*)(addr + off), (void*)v) < 0) return false;
+    }
+    return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -350,19 +387,23 @@ static int Install(int pid, const Cfg& cfg) {
     int sig = cfg.sig ? (int)cfg.sig : RC_SIG;
     if (sig != RC_SIG) sig = RC_SIG;
 
-    // 1. find RWX region
+    // 1. find executable region (rwxp preferred, r-xp fallback via ptrace poke)
     uintptr_t jit = 0;
     size_t jitSize = 0;
-    if (!RC_FindRWX(pid, &jit, &jitSize)) return RC_NO_RWX;
+    bool writable = false;
+    if (!RC_FindExecRegion(pid, &jit, &jitSize, &writable)) return RC_NO_RWX;
 
     // 2. attach
     if (!RC_Attach(pid)) return RC_FAIL;
+    s_usePoke = !writable;
 
-    // 3. save original JIT bytes, write stubs
+    // 3. save original bytes, write stubs (poke path for RX regions)
     uint8_t orig[RC_STUB_TOTAL];
-    if (!RC_VmRead(pid, jit, orig, sizeof(orig))) {
+    bool okRead  = writable ? RC_VmRead(pid, jit, orig, sizeof(orig))
+                            : RC_PokeRead(pid, jit, orig, sizeof(orig));
+    if (!okRead) {
         RC_Detach(pid);
-        SetErr("cannot read jit region");
+        SetErr("cannot read region");
         return RC_FAIL;
     }
     uint32_t st1[12], st2[26], st3[8];
@@ -372,37 +413,40 @@ static int Install(int pid, const Cfg& cfg) {
     memcpy(scratch, st1, sizeof(st1));
     memcpy(scratch + 0x40, st2, sizeof(st2));
     memcpy(scratch + 0xE0, st3, sizeof(st3));
-    if (!RC_VmWrite(pid, jit, scratch, sizeof(scratch))) {
+    bool okWrite = writable ? RC_VmWrite(pid, jit, scratch, sizeof(scratch))
+                            : RC_PokeWrite(pid, jit, scratch, sizeof(scratch));
+    if (!okWrite) {
         RC_Detach(pid);
         SetErr("cannot write stubs");
         return RC_FAIL;
     }
+    auto RestoreRegion = [&]() {
+        if (writable) RC_VmWrite(pid, jit, orig, sizeof(orig));
+        else RC_PokeWrite(pid, jit, orig, sizeof(orig));
+    };
 
     // 4. phase 1: mmap
     RC_Regs r, out;
-    if (!RC_GetRegs(pid, &r)) { RC_Detach(pid); SetErr("getregs"); return RC_FAIL; }
+    if (!RC_GetRegs(pid, &r)) { RestoreRegion(); RC_Detach(pid); SetErr("getregs"); return RC_FAIL; }
     r.pc = jit;
     if (!RC_RunStub(pid, r, &out, cfg.timeoutMs)) {
-        RC_VmWrite(pid, jit, orig, sizeof(orig));
-        RC_Detach(pid);
+        RestoreRegion(); RC_Detach(pid);
         return RC_FAIL;
     }
     uintptr_t base = (uintptr_t)out.regs[6];
     if (base == 0 || base >= 0x7fffffffffffULL) {
-        RC_VmWrite(pid, jit, orig, sizeof(orig));
-        RC_Detach(pid);
+        RestoreRegion(); RC_Detach(pid);
         SetErr("mmap failed");
         return RC_FAIL;
     }
 
-    // 5. write trampoline into page0 (still RWX now)
+    // 5. write trampoline into page0 (mmap region is RWX until phase 2)
     uint32_t tramp[32];
     memset(tramp, 0, sizeof(tramp));
     RC_BuildTrampoline(tramp, cfg);
     ((uint64_t*)((uint8_t*)tramp + 0x44))[0] = base + RC_SCRATCH; // scratch addr
     if (!RC_VmWrite(pid, base, tramp, 0x4C)) {
-        RC_VmWrite(pid, jit, orig, sizeof(orig));
-        RC_Detach(pid);
+        RestoreRegion(); RC_Detach(pid);
         SetErr("cannot write trampoline");
         return RC_FAIL;
     }
@@ -415,20 +459,18 @@ static int Install(int pid, const Cfg& cfg) {
     r.regs[9]  = SA_RESTART_ARM64;           // x9 = sa_flags
     r.regs[26] = base + RC_OLDACT;           // x26 = oldact out (stub2: mov x2,x26)
     if (!RC_RunStub(pid, r, &out, cfg.timeoutMs)) {
-        RC_VmWrite(pid, jit, orig, sizeof(orig));
-        RC_Detach(pid);
+        RestoreRegion(); RC_Detach(pid);
         return RC_FAIL;
     }
     if ((long)out.regs[7] != 0) {
         // rt_sigaction failed (x7 = result)
-        RC_VmWrite(pid, jit, orig, sizeof(orig));
-        RC_Detach(pid);
+        RestoreRegion(); RC_Detach(pid);
         SetErr("rt_sigaction failed");
         return RC_FAIL;
     }
 
-    // 7. restore JIT bytes, detach. TracerPid -> 0
-    RC_VmWrite(pid, jit, orig, sizeof(orig));
+    // 7. restore region bytes, detach. TracerPid -> 0
+    RestoreRegion();
     RC_Detach(pid);
 
     s_pid       = pid;
@@ -473,7 +515,7 @@ static void Uninstall(int pid) {
     if (!RC_PidAlive(pid)) { s_installed = false; s_base = 0; s_pid = 0; return; }
     if (!RC_Attach(pid)) { s_installed = false; s_base = 0; s_pid = 0; return; }
 
-    // re-write stubs (JIT bytes were restored after install)
+    // re-write stubs (region bytes were restored after install)
     uint32_t st1[12], st2[26], st3[8];
     RC_BuildStubs(st1, st2, st3);
     uint8_t scratch[RC_STUB_TOTAL];
@@ -481,7 +523,9 @@ static void Uninstall(int pid) {
     memcpy(scratch, st1, sizeof(st1));
     memcpy(scratch + 0x40, st2, sizeof(st2));
     memcpy(scratch + 0xE0, st3, sizeof(st3));
-    if (RC_VmWrite(pid, s_jit, scratch, sizeof(scratch))) {
+    bool wroteStubs = s_usePoke ? RC_PokeWrite(pid, s_jit, scratch, sizeof(scratch))
+                                : RC_VmWrite(pid, s_jit, scratch, sizeof(scratch));
+    if (wroteStubs) {
         // phase 3: restore original handler + munmap trampoline region
         RC_Regs r, out;
         if (RC_GetRegs(pid, &r)) {
@@ -494,13 +538,15 @@ static void Uninstall(int pid) {
             RC_RunStub(pid, r, &out, 1500);
         }
     }
-    RC_VmWrite(pid, s_jit, s_orig, sizeof(s_orig)); // restore JIT bytes
+    if (s_usePoke) RC_PokeWrite(pid, s_jit, s_orig, sizeof(s_orig));
+    else RC_VmWrite(pid, s_jit, s_orig, sizeof(s_orig)); // restore region bytes
     RC_Detach(pid);
 
     s_installed = false;
     s_base = 0;
     s_jit  = 0;
     s_pid  = 0;
+    s_usePoke = false;
 }
 
 } // namespace RC

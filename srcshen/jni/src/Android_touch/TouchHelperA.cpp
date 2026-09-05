@@ -35,8 +35,10 @@ long long g_touchMirrorWrites = 0;
 long long g_touchMirrorBytes = 0;
 long long g_touchTapWrites = 0;
 long long g_touchTapBytes = 0;
+long long g_touchTapFails = 0;    // berapa kali write tap sintetik ditolak
 int  g_touchLastErr = 0;
 char g_touchDevName[64] = "";
+bool g_touchWatchdogOn = true;    // watchdog re-disable block_untrusted_touches
 
 
 static uint32_t orientation = 0;
@@ -78,6 +80,31 @@ static const int SYN_TRACKING = 0x4000;
 static bool g_synDown = false;
 static volatile int g_realContacts = 0;   // jari asli yg lagi nempel (buat BTN_TOUCH up)
 
+// write helper dengan 1x retry (kernel/MTK kadang nolak sementara pas game
+// baru re-enable block_untrusted_touches; retry 15ms kemudian sering lolos)
+static ssize_t TapWrite(int fd, void* ev, size_t len, const char* tag) {
+    ssize_t wrc = write(fd, ev, len);
+    if (wrc < 0) {
+        int e1 = errno;
+        usleep(15000);
+        wrc = write(fd, ev, len);
+        if (wrc < 0) {
+            g_touchTapFails++;
+            if (g_touchDebugLog)
+                printf("[TOUCH] %s write FAILED errno=%d (retry jg gagal, total fail %lld)\n",
+                       tag, e1, (long long) g_touchTapFails);
+            g_touchLastErr = e1;
+        } else {
+            if (g_touchDebugLog)
+                printf("[TOUCH] %s write ok setelah retry (errno pertama=%d)\n", tag, e1);
+            g_touchLastErr = 0;
+        }
+    } else {
+        g_touchLastErr = 0;
+    }
+    return wrc;
+}
+
 static void SendTapUp();   // forward decl (dipakai SendTapDown)
 
 static void SendTapDown(int nx, int ny) {
@@ -95,11 +122,10 @@ static void SendTapDown(int nx, int ny) {
     ev[c++] = {EV_KEY, BTN_TOUCH, 1};
     ev[c++] = {EV_KEY, BTN_TOOL_FINGER, 1};
     ev[c++] = {EV_SYN, SYN_REPORT, 0};
-    ssize_t wrc = write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    ssize_t wrc = TapWrite(nowfd, ev, (size_t)c * sizeof(struct input_event), "tap DOWN");
     if (wrc > 0) { g_touchTapWrites++; g_touchTapBytes += wrc; }
-    else if (wrc < 0) g_touchLastErr = errno;
-    if (g_touchDebugLog)
-        printf("[TOUCH] tap DOWN (%d,%d) fd=%d bytes=%zd errno=%d\n", nx, ny, nowfd, wrc, errno);
+    if (g_touchDebugLog && wrc > 0)
+        printf("[TOUCH] tap DOWN (%d,%d) fd=%d bytes=%zd\n", nx, ny, nowfd, wrc);
     g_synDown = true;
 }
 
@@ -131,11 +157,10 @@ static void SendTapUp() {
         ev[c++] = {EV_KEY, BTN_TOOL_FINGER, 0};
     }
     ev[c++] = {EV_SYN, SYN_REPORT, 0};
-    ssize_t wrc = write(nowfd, ev, (size_t)c * sizeof(struct input_event));
+    ssize_t wrc = TapWrite(nowfd, ev, (size_t)c * sizeof(struct input_event), "tap UP");
     if (wrc > 0) { g_touchTapWrites++; g_touchTapBytes += wrc; }
-    else if (wrc < 0) g_touchLastErr = errno;
-    if (g_touchDebugLog)
-        printf("[TOUCH] tap UP fd=%d bytes=%zd errno=%d\n", nowfd, wrc, errno);
+    if (g_touchDebugLog && wrc > 0)
+        printf("[TOUCH] tap UP fd=%d bytes=%zd\n", nowfd, wrc);
     g_synDown = false;
 }
 
@@ -386,6 +411,21 @@ static int DiscoverTouchDevices(char evpath[maxE][64]) {
     return found;
 }
 
+// Watchdog: MLBB/Aegis suka re-enable block_untrusted_touches=1 di runtime
+// (gejala: tap pertama jalan, terus ENOSYS). Thread ini re-disable tiap 1.5s
+// selama fitur touch aktif biar sentuhan sintetik kita tetep diterima.
+static void *UntrustedWatchdog(void *) {
+    while (g_touchWatchdogOn && Touch_initialized) {
+        usleep(1500000);   // 1.5s
+        DisableUntrustedTouchBlock();
+        // verifikasi: kalau masih ada yg re-enable, errno tap akan muncul terus.
+        if (g_touchTapFails > 0 && g_touchDebugLog)
+            printf("[TOUCH] watchdog: tap fails=%lld (block kemungkinan di-re-enable game, sudah di-disable lagi)\n",
+                   (long long) g_touchTapFails);
+    }
+    return nullptr;
+}
+
 bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
     if (!readOnly) DisableUntrustedTouchBlock();
     char evpath[maxE][64];
@@ -591,6 +631,14 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
     printf("[TOUCH] init OK: %d device grabbed [%s], uinput fd=%d, screen %dx%d\n",
            fdNum, g_touchDevName[0] ? g_touchDevName : "?", nowfd, screenX, screenY);
     system("chmod 000 -R /proc/bus/input/*");
+
+    // watchdog re-disable block_untrusted_touches (counter anti-cheat re-enable)
+    if (!readOnly) {
+        g_touchWatchdogOn = true;
+        pthread_t wt;
+        if (pthread_create(&wt, nullptr, UntrustedWatchdog, nullptr) == 0)
+            pthread_detach(wt);
+    }
     return true;
 }
 void UpdateScreenData(int w, int h, uint32_t orientation_) {
@@ -634,6 +682,7 @@ static bool checkDeviceIsTouch(int fd) {
 }
 
 void Touch_Close() {
+    g_touchWatchdogOn = false;
     if (Touch_initialized) {
         for (int i = 0; i < maxE; ++i) {
             if (origfd[i] > 0) {

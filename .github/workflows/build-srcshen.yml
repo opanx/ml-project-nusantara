@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.5"
+          REL="v1.6"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,14 +70,24 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.5
+      - name: Create pre-release v1.6
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5
-          name: "Panxcz cheat mlbb v1.5 pre release (Direct Call bypass)"
+          tag_name: v1.6
+          name: "Panxcz cheat mlbb v1.6 pre release (touch anti-block)"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v1.5 pre release (Direct Call bypass)
+            ## Panxcz cheat mlbb v1.6 pre release (touch anti-block)
+
+            ### 🔧 HOTFIX — RETRI TOUCH DITOLAK SISTEM (errno=38 ENOSYS) (v1.6)
+            - **Gejala**: tap retri 1-2x pertama sukses, terus `errno=38` (ENOSYS) selamanya — MLBB/Aegis re-enable `block_untrusted_touches=1` di runtime, kernel MTK langsung nolak event uinput.
+            - **Fix watchdog**: thread baru re-disable `block_untrusted_touches` (global/secure/system) tiap 1.5 detik selama tool jalan — counter anti-cheat yang suka nyalain lagi.
+            - **Fix retry tap**: kalau write uinput ditolak, retry 1x setelah 15ms (sering lolos pas block baru di-disable).
+            - **Diagnostic**: counter `tap fails` live di UI + baris DBG biar keliatan langsung kalau sistem masih nolak.
+
+            ### 🛡️ DIRECT CALL — FIX LOG BANJIR + INSTALL DI ROM TANPA RWX (v1.6)
+            - **Fix log banjir**: install direct-call sekarang SEKALI per match + backoff 5s→10s→20s→30s kalau gagal (dulu nyoba tiap frame = spam log + attach ptrace berulang = risiko anti-cheat). Reset backoff pas ganti match.
+            - **Fix "no rwxp region"**: kalau device ga punya region RWX, fallback ke region `r-xp` (anon/JIT) — stub ditulis via **PTRACE poke** (bisa nulis ke region read-only) → direct call bisa install di lebih banyak ROM.
 
             ### 🛡️ BARU — DIRECT CALL BYPASS (v1.5)
             - **Engine `RemoteCall.h`**: panggil fungsi cast retri LANGSUNG di dalam proses game via **signal trampoline** — tanpa ptrace saat bermain (attach 5ms sekali doang, langsung detach), tanpa patch .so game, tanpa thread baru.
