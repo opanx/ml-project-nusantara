@@ -56,8 +56,17 @@ long long g_touchTapWrites = 0;
 long long g_touchTapBytes = 0;
 long long g_touchTapFails = 0;    // berapa kali write tap sintetik ditolak
 int  g_touchLastErr = 0;
-char g_touchDevName[64] = "";
-bool g_touchWatchdogOn = true;    // watchdog re-disable block_untrusted_touches
+char g_touchDevName[64] = "";bool  g_touchWatchdogOn = true;    // watchdog re-disable block_untrusted_touches
+
+// ===== v1.14: axis pelengkap dari device asli (hasil studi herz/ther) =====
+// Driver sentuh asli (mtk-tpd dkk) selalu kirim ABS_MT_PRESSURE + TOUCH_MAJOR
+// pas jari nempel. Tap sintetik kita harus nyaruain bentuk stream itu, kalau
+// nggak InputReader/anti-cheat bisa anggap event aneh & buang. Di-copy dari
+// device asli di FASE 2 (hanya kalau device punya axis-nya) -> guard aman.
+static bool s_hasPressure = false;
+static int  s_pressureMin = 0, s_pressureMax = 255;
+static bool s_hasTouchMajor = false;
+static int  s_touchMajorMax = 0;
 
 
 static uint32_t orientation = 0;
@@ -129,10 +138,20 @@ static void SendTapUp();   // forward decl (dipakai SendTapDown)
 static void SendTapDown(int nx, int ny) {
     if (!Touch_initialized || nowfd <= 0) return;
     if (g_synDown) SendTapUp();
-    struct input_event ev[10];
+    // v1.14: nyaruain stream driver asli (slot -> tracking -> pressure/major -> XY
+    // -> SYN_MT_REPORT -> BTN -> SYN_REPORT). Urutan & axis pelengkap cuma dikirim
+    // kalau device asli punya axis itu (guard -> ga ada risiko -EINVAL kayak v1.9).
+    struct input_event ev[16];
     int c = 0;
     ev[c++] = {EV_ABS, ABS_MT_SLOT, SYN_SLOT};
     ev[c++] = {EV_ABS, ABS_MT_TRACKING_ID, SYN_TRACKING};
+    if (s_hasPressure) {
+        int pv = s_pressureMin + (s_pressureMax - s_pressureMin) * 3 / 5;
+        ev[c++] = {EV_ABS, ABS_MT_PRESSURE, pv};
+    }
+    if (s_hasTouchMajor && s_touchMajorMax > 0) {
+        ev[c++] = {EV_ABS, ABS_MT_TOUCH_MAJOR, s_touchMajorMax / 3 > 0 ? s_touchMajorMax / 3 : 1};
+    }
     ev[c++] = {EV_ABS, ABS_MT_POSITION_X, nx};
     ev[c++] = {EV_ABS, ABS_MT_POSITION_Y, ny};
     ev[c++] = {EV_ABS, ABS_X, nx};
@@ -635,6 +654,14 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
                             ui_dev.absmax[code] = ai.maximum;
                             ui_dev.absfuzz[code] = ai.fuzz;
                             ui_dev.absflat[code] = ai.flat;
+                            if (code == ABS_MT_PRESSURE) {
+                                s_hasPressure = true;
+                                s_pressureMin = ai.minimum;
+                                s_pressureMax = ai.maximum;
+                            } else if (code == ABS_MT_TOUCH_MAJOR) {
+                                s_hasTouchMajor = true;
+                                s_touchMajorMax = ai.maximum;
+                            }
                         }
                     }
                 }

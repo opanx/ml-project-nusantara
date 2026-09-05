@@ -2074,7 +2074,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.13 (fix device discovery toleran type-A: slot opsional)\n");
+    printf("[+] PANXCZ MLBB v1.14 (tap sinkron stream driver asli: pressure+major guarded)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");

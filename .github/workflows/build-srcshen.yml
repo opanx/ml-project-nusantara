@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.13"
+          REL="v1.14"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,32 +70,35 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.13
+      - name: Create pre-release v1.14
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v1.13
-          name: "Panxcz cheat mlbb v1.13 pre release (fix device discovery toleran type-A)"
+          tag_name: v1.14
+          name: "Panxcz cheat mlbb v1.14 pre release (tap sinkron stream driver asli)"
           prerelease: true
           body: |
+            ## Panxcz cheat mlbb v1.14 pre release (tap sinkron stream driver asli)
+
+            ### 🔬 Hasil studi touch herz-kimmy / The Ruler / PRIMEBIT:
+            - **PRIMEBIT-KERNEL**: ga punya touch sintetik sama sekali (murni room-info/ESP, EGL-only). Bukan patokan touch.
+            - **herz & The Ruler (yg work)**: arsitekturnya SAMA PERSIS dgn kita - uinput clone + grab device asli + mirror + `settings put system/global/secure block_untrusted_touches 0` + `Transaction::setTrustedOverlay` via dlsym. Semua itu udah ada di tool kita sejak v1.8+.
+            - Bedanya di **bentuk event tap**: driver asli (mtk-tpd) selalu kirim `ABS_MT_PRESSURE` + `ABS_MT_TOUCH_MAJOR` saat jari nempel. Tap sintetik kita cuma kirim XY+tracking - bentuk stream beda dari driver asli -> InputReader/anti-cheat berpotensi anggap aneh.
+
+            ### 🔧 Fix di v1.14 (guard aman, beda dari percobaan v1.9):
+            - Tap DOWN sekarang kirim `ABS_MT_PRESSURE` + `ABS_MT_TOUCH_MAJOR` **hanya kalau device asli beneran punya axis itu** (di-copy range aslinya di FASE 2). Nilai pressure = 60% range (kayak tap beneran).
+            - v1.9 gagal karena kirim axis tanpa guard -> bisa -EINVAL/aneh di kernel. Sekarang axis cuma dikirim kalau uinput-nya ke-register axis itu.
+            - Urutan event tap disamain dgn driver type-B: slot -> tracking -> pressure/major -> X/Y -> SYN_MT_REPORT -> BTN -> SYN_REPORT.
+
+            ### ⚠️ Catatan jujur:
+            - Verifikasi kiriman event di kernel (lewat node evdev sendiri) di sandbox **tidak teramati** - write tap diterima penuh kernel (240B/144B errno=0) tapi echo ke pembaca evdev baru kosong (perilaku kernel/MTK: event di-fan-out ke client yg udah nempel sejak awal, InputReader).
+            - Karena itu keputusan final tetep dari test in-game: buka MLBB -> jalanin -> centang Auto Retri -> geser dot ke tombol retri -> Test Tap -> liat `✓ HP turun` / `✗`.
+
+            ---
+
             ## Panxcz cheat mlbb v1.13 pre release (fix device discovery toleran type-A)
 
-            ### 🎯 AKAR "tidak ada device sentuh ditemukan" (log v1.11/v1.12):
-            ```
-            [TOUCH] FAILED: tidak ada device sentuh ditemukan (5 event node, open RW errno=0)
-            ```
-            Semua /dev/input **kebuka** (errno=0) tapi semuanya ditolak `checkDeviceIsTouch`.
-            Sebabnya: deteksi lama **WAJIB punya ABS_MT_SLOT + ABS_MT_POSITION_X/Y sekaligus**.
-            Banyak driver type-A (mtk-tpd / ROM AOSP) ga emit ABS_MT_SLOT -> padahal dia
-            device sentuh yang valid -> semua ditolak -> Touch_Init gagal -> menu mati & ga
-            ada thread yang feed ImGui.
-
             ### 🔧 Fix di v1.13:
-            - **Deteksi toleran**: cukup ABS_MT_POSITION_X/Y (EVIOCGABS sukses). ABS_MT_SLOT
-              jadi opsional - device tanpa slot tetap diterima (thread baca aman: index slot
-              default 0), cuma prioritasnya di bawah yang punya slot (type-B lebih rapi).
-            - **Prioritas berlapis**: RW+slot > RW+no-slot > RO+slot > RO+no-slot (grabless).
-            - **Diagnosa lengkap**: kalau masih gagal, pesan FAILED sekarang nampilin jumlah
-              node yang kebuka RW vs yang ditolak caps - langsung ketahuan device-nya kenapa.
+            - Deteksi toleran type-A (slot opsional) + prioritas berlapis RW+slot > RW+no-slot > RO+slot > RO+no-slot + maxE 5->16 + diagnosa jumlah node kebuka/ditolak.
 
             ---
 
