@@ -50,6 +50,7 @@
 #include "icon/HeroIcons.h"
 #include "Decoder64.h"
 #include "DrawIconHero.h"
+#include "Includes/RemoteCall.h"
 
 using namespace Memory;
 
@@ -430,6 +431,16 @@ int retriRetryMs = 2500;       // retry tap tiap X ms kalau target masih hidup
 int retriDmgBonus = 0;         // koreksi damage retri (kalau formula meleset)
 float retriMaxDist = 700.0f;   // jarak max trigger dlm unit DUNIA asli (range retri MLBB = 700). Jangan pakai skala minimap!
 float retriJungleMult = 1.0f;  // pengali damage utk monster (item jungle/blessing)
+
+// ===== Direct Call bypass (v1.5) =====
+// Panggil fungsi cast retri DI DALAM proses game via signal trampoline
+// (RemoteCall.h). Lebih cepat & presisi dari sentuhan. Default RVA =
+// ChooseHeroMgr.ReqUseSummonSkill dari dump 22.1.97.12061.
+// Kalau test device crash / ga ke-cast, ganti RVA-nya (lihat BYPASS.md).
+#define RETRI_CAST_RVA 0x26c998cULL
+bool g_retriDirect = false;         // UI toggle: pakai direct call (bypass)
+static bool g_retriDirectReady = false;
+static uintptr_t g_retriBypassPlayer = 0; // Oneself yg terakhir di-bake ke trampoline
 
 static uint64_t NowMs() {
     using namespace std::chrono;
@@ -979,10 +990,39 @@ int CalculateRetriDamage(int Level) {
     return 750 + 150 * Level;
 }
 
+// install/refresh bypass tiap ganti match (Oneself berubah) & uninstall kalau toggle off
+static void RetriBypassTick() {
+    if (!g_retriDirect) {
+        if (g_retriDirectReady) {
+            RC::Uninstall(pid);
+            g_retriDirectReady = false;
+            printf("[RETRI] direct-call bypass uninstalled\n");
+        }
+        return;
+    }
+    if (!Oneself || pid <= 0) return;
+    if (g_retriDirectReady && Oneself == g_retriBypassPlayer) return;
+    if (g_retriDirectReady) RC::Uninstall(pid);
+    RC::Cfg cfg;
+    cfg.context    = 0;                      // 'this' -> 0 (default; ganti kalau fungsi butuh instance)
+    cfg.playerAddr = Oneself;                // sumber m_iSummonSkillId
+    cfg.castFunc   = libbase + RETRI_CAST_RVA;
+    cfg.skillIdOff = 0x95c;                  // m_iSummonSkillId
+    cfg.sig        = 0;                      // auto (40)
+    int rc = RC::Install(pid, cfg);
+    g_retriDirectReady = (rc == RC::RC_OK);
+    g_retriBypassPlayer = Oneself;
+    printf("[RETRI] direct-call bypass: %s (rc=%d)%s\n",
+           g_retriDirectReady ? "INSTALLED" : "FAILED", rc,
+           g_retriDirectReady ? "" : RC::ErrStr());
+}
+
 static void DoRetriTap(int i, uint64_t now) {
     printf("[RETRI] auto-tap target#%d dist=%.0f hp=%d/%d -> ",
            i, monster[i].distance, monster[i].health, monster[i].maxHP);
-    if (g_retriNativeX >= 0 && g_retriNativeY >= 0) {
+    if (g_retriDirectReady && RC::Fire(pid) == 1) {
+        printf("DIRECT-CALL (bypass)\n");
+    } else if (g_retriNativeX >= 0 && g_retriNativeY >= 0) {
         printf("native(%d,%d)\n", g_retriNativeX, g_retriNativeY);
         Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
     } else {
@@ -1316,7 +1356,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v1.4");
+    ImGui::TextDisabled("MLBB v1.5");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1375,6 +1415,22 @@ void Layout_tick_UI() {
         if (ImGui::BeginTabItem(TR("Auto Retri", "Auto Retri"))) {
             SectionHeader(TR("Auto Retribution", "Auto Retri"));
             ImGui::Checkbox(TR("Enable Auto Retri", "Aktifkan Auto Retri"), &autoRetribution);
+
+            ImGui::Spacing();
+            SectionHeader(TR("Direct Call (Bypass)", "Direct Call (Bypass)"));
+            ImGui::Checkbox(TR("Direct call - tanpa sentuhan (bypass)", "Direct call - tanpa sentuhan (bypass)"), &g_retriDirect);
+            if (g_retriDirect) {
+                if (g_retriDirectReady)
+                    ImGui::TextColored(ImColor(120, 255, 160, 255),
+                        TR("Bypass INSTALLED - retri via direct call", "Bypass TERPASANG - retri via direct call"));
+                else
+                    ImGui::TextColored(ImColor(255, 120, 120, 255),
+                        TR("Bypass FAILED (%s) - fallback touch", "Bypass GAGAL (%s) - fallback touch"), RC::ErrStr());
+                ImGui::TextDisabled(TR("Cast RVA: 0x%llX (ReqUseSummonSkill) - ganti di RETRI_CAST_RVA kalau perlu", "Cast RVA: 0x%llX (ReqUseSummonSkill) - ganti di RETRI_CAST_RVA kalau perlu"), (unsigned long long) RETRI_CAST_RVA);
+            } else {
+                ImGui::TextDisabled(TR("Default: touch (aman & terbukti). Aktifkan direct call setelah RVA diverifikasi (BYPASS.md).", "Default: touch (aman & terbukti). Aktifkan direct call setelah RVA diverifikasi (BYPASS.md)."));
+            }
+            ImGui::Spacing();
 
             ImGui::Spacing();
             ImGui::TextDisabled(TR("Retri button position (screen coords)", "Posisi tombol retri (koordinat layar)"));
@@ -1718,7 +1774,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.4\n");
+    printf("[+] PANXCZ MLBB v1.5 (Direct Call bypass)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -1772,6 +1828,7 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     while (main_thread_flag) {
         if ((++saveTick % 1500) == 0) SaveCfg();   // autosave tiap ~1.5 detik
         MonsterRetribution();
+        RetriBypassTick();
         CheckAndTriggerRetribution();
         ApplyDroneView();
         // refresh Room/Player info berkala (~200ms) biar langsung muncul begitu
@@ -1797,6 +1854,7 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
         usleep(1000);
     }
     SaveCfg();
+    if (g_retriDirectReady) { RC::Uninstall(pid); g_retriDirectReady = false; }
     shutdown();
     Touch_Close();
     return 0;

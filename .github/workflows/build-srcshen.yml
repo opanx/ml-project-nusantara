@@ -44,6 +44,7 @@ jobs:
           cp srcshen/libs/arm64-v8a/panxcz_mlbb release/panxcz_mlbb 2>/dev/null || true
           chmod 755 release/panxcz_mlbb 2>/dev/null || true
           cp com.mobile.legends_22.1.97.12061.cs release/dump_22.1.97.12061.cs 2>/dev/null || true
+          cp srcshen/BYPASS.md release/BYPASS.md 2>/dev/null || true
           ls -la release/ || true
 
       - name: Upload artifact
@@ -58,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.4"
+          REL="v1.5"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -69,14 +70,20 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.4
+      - name: Create pre-release v1.5
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.4
-          name: "Panxcz cheat mlbb v1.4 pre release"
+          tag_name: v1.5
+          name: "Panxcz cheat mlbb v1.5 pre release (Direct Call bypass)"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v1.4 pre release
+            ## Panxcz cheat mlbb v1.5 pre release (Direct Call bypass)
+
+            ### 🛡️ BARU — DIRECT CALL BYPASS (v1.5)
+            - **Engine `RemoteCall.h`**: panggil fungsi cast retri LANGSUNG di dalam proses game via **signal trampoline** — tanpa ptrace saat bermain (attach 5ms sekali doang, langsung detach), tanpa patch .so game, tanpa thread baru.
+            - **Bypass berlapis**: TracerPid=0 selama match, hash .so utuh, trigger = 1 sinyal OS, cleanup total saat exit. Penjelasan detail: **`BYPASS.md`** (baca dulu).
+            - **Tab Auto Retri → Direct Call (Bypass)**: toggle + status INSTALLED/FAILED live. Default OFF — pakai touch dulu sampai RVA cast diverifikasi di device (ganti `RETRI_CAST_RVA` di main.cpp, default `0x26c998c` = ReqUseSummonSkill dari dump). Kalau install gagal → otomatis fallback touch, no crash.
+            - **DoRetriTap prioritas direct call** kalau bypass ready, fallback touch.
 
             ### HOTFIX — LAYOUT SKILL CD + MAPPING SLOT (v1.2)
             - **CD dipindah ke KANAN hero** (kolom terpisah dari bar HP/MP) — sebelumnya dot & angka CD numpuk di area bar + semua angka di satu titik → susah dibedain.
