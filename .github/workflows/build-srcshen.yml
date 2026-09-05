@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.14"
+          REL="v1.15"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,14 +70,23 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.14
+      - name: Create pre-release v1.15
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v1.14
-          name: "Panxcz cheat mlbb v1.14 pre release (tap sinkron stream driver asli)"
+          tag_name: v1.15
+          name: "Panxcz cheat mlbb v1.15 pre release (retri balik cara v0.3: native SetDot dulu)"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v1.14 pre release (tap sinkron stream driver asli)
+            ## Panxcz cheat mlbb v1.15 pre release (retri balik cara v0.3: native SetDot dulu)
+
+### 🔧 v1.15 - retri balik ke cara v0.3/herz yg terbukti:
+- retriX/Y/native ga di-persist lagi (cfg lama bikin dot nyangkut (1551,968) -> tap meleset). Default selalu proporsional 64%/61% (~1575,661) persis v0.3.
+- Jalur tap: direct-call > native SetDot (ground truth) > default logical (konversi v0.3). Screen-map/DotToNative v1.9 dihapus dari jalur auto (sering salah pilih rotasi -> tap meleset 90 derajat walau dot keliatan bener).
+- Set Dot sekarang jadi satu-satunya kalibrasi: ketuk tombol retri sekali -> native disimpan -> tap retri pakai native itu persis.
+
+---
+
+## Panxcz cheat mlbb v1.14 pre release (tap sinkron stream driver asli)
 
             ### 🔬 Hasil studi touch herz-kimmy / The Ruler / PRIMEBIT:
             - **PRIMEBIT-KERNEL**: ga punya touch sintetik sama sekali (murni room-info/ESP, EGL-only). Bukan patokan touch.

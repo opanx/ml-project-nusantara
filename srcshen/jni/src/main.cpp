@@ -1295,17 +1295,19 @@ static void DoRetriTap(int i, uint64_t now) {
     int tnx = -1, tny = -1;
     if (g_retriDirectReady && RC::Fire(pid) == 1) {
         printf("DIRECT-CALL (bypass)\n");
-    } else if (DotToNative(retriTouchX, retriTouchY, &tnx, &tny)) {
-        printf("native(dot %d,%d)\n", tnx, tny);
-        Touch_TapNative(tnx, tny, retriHoldMs);
-        RetriVerifyArm(monster[i].address, monster[i].health);
     } else if (NativeInPanel(g_retriNativeX, g_retriNativeY)) {
-        printf("native(calib %d,%d)\n", g_retriNativeX, g_retriNativeY);
+        // v1.15: prioritas = native hasil Set Dot (ground-truth, orientation-proof)
+        printf("native(SetDot %d,%d)\n", g_retriNativeX, g_retriNativeY);
         Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
         RetriVerifyArm(monster[i].address, monster[i].health);
     } else {
-        printf("logical(%.0f,%.0f) [Set Dot dulu utk presisi!]\n", retriTouchX, retriTouchY);
-        Touch_Tap((int) retriTouchX, (int) retriTouchY, retriHoldMs);
+        // default = persis v0.3: logical langsung dikonversi -> terbukti kena.
+        // DotToNative/screen-map v1.9 dihapus dari jalur auto (sering salah pilih
+        // kandidat rotasi -> tap meleset 90 derajat walau dot keliatan bener).
+        tnx = (int) retriTouchX; tny = (int) retriTouchY;
+        printf("logical(%.0f,%.0f)\n", retriTouchX, retriTouchY);
+        Touch_Tap(tnx, tny, retriHoldMs);
+        RetriVerifyArm(monster[i].address, monster[i].health);
     }
     lastRetriTriggered[i] = true;
     lastRetriTapMs[i] = now;
@@ -1315,11 +1317,8 @@ static void DoRetriTap(int i, uint64_t now) {
 static void ManualTestTap() {
     printf("[RETRI] manual test tap\n");
     int tnx = -1, tny = -1;
-    if (DotToNative(retriTouchX, retriTouchY, &tnx, &tny)) {
-        printf("[RETRI] -> native(dot %d,%d)\n", tnx, tny);
-        Touch_TapNative(tnx, tny, retriHoldMs);
-    } else if (NativeInPanel(g_retriNativeX, g_retriNativeY)) {
-        printf("[RETRI] -> native(calib %d,%d)\n", g_retriNativeX, g_retriNativeY);
+    if (NativeInPanel(g_retriNativeX, g_retriNativeY)) {
+        printf("[RETRI] -> native(SetDot %d,%d)\n", g_retriNativeX, g_retriNativeY);
         Touch_TapNative(g_retriNativeX, g_retriNativeY, retriHoldMs);
     } else {
         printf("[RETRI] -> logical (%.0f,%.0f)\n", retriTouchX, retriTouchY);
@@ -1956,8 +1955,8 @@ static void SaveCfg() {
     w("retriBonus", retriDmgBonus);
     w("retriDist", (long long) (retriMaxDist * 100.0f));
     w("retriJung", (long long) (retriJungleMult * 100.0f));
-    w("retriNX", g_retriNativeX);
-    w("retriNY", g_retriNativeY);
+    // v1.15: retriX/retriY/native TIDAK di-persist (v0.3: fixed default tiap run,
+    // Set Dot per sesi). Cfg lama yg bikin dot nyangkut di posisi salah dibuang.
     w("espHealth", drawMHealth ? 1 : 0);
     w("espIcon", iconhero ? 1 : 0);
     w("espDist", drawMDistance ? 1 : 0);
@@ -1994,16 +1993,12 @@ static void LoadCfg() {
         else if (k == "offX") g_Res1_OffsetX = (float) v / 100.0f;
         else if (k == "offY") g_Res1_OffsetY = (float) v / 100.0f;
         else if (k == "mapScale") g_MinimapScale = (float) v / 100.0f;
-        else if (k == "retriX") retriTouchX = (float) v;
-        else if (k == "retriY") retriTouchY = (float) v;
         else if (k == "retriDot") retriDotSize = (float) v;
         else if (k == "retriHold") retriHoldMs = (int) v;
         else if (k == "retriRetry") retriRetryMs = (int) v;
         else if (k == "retriBonus") retriDmgBonus = (int) v;
         else if (k == "retriDist") retriMaxDist = (float) v / 100.0f;
         else if (k == "retriJung") retriJungleMult = (float) v / 100.0f;
-        else if (k == "retriNX") g_retriNativeX = (int) v;
-        else if (k == "retriNY") g_retriNativeY = (int) v;
         else if (k == "espHealth") drawMHealth = v != 0;
         else if (k == "espIcon") iconhero = v != 0;
         else if (k == "espDist") drawMDistance = v != 0;
@@ -2074,7 +2069,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.14 (tap sinkron stream driver asli: pressure+major guarded)\n");
+    printf("[+] PANXCZ MLBB v1.15 (retri balik ke cara v0.3: default 64%/61%, tap native SetDot dulu)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -2103,14 +2098,12 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     ::native_window_screen_y = (displayInfo.height < displayInfo.width ? displayInfo.height : displayInfo.width);
     printf("[+] Screen: %dx%d (displayInfo %dx%d orient=%u)\n", abs_ScreenX, abs_ScreenY,
            displayInfo.width, displayInfo.height, displayInfo.orientation);
-    // Posisi default tombol retri: proporsional ke layar (support semua resolusi/HP).
-    // Kalau user pernah Set Dot / punya cfg, LoadCfg() nanti menimpa dgn nilai tersimpan.
-    // Posisi tombol retri MLBB kira-kira 64% lebar & 61% tinggi (dari kalibrasi 2460x1080).
-    if (retriTouchX < 0 || retriTouchY < 0) {
-        retriTouchX = abs_ScreenX * 0.64f;
-        retriTouchY = abs_ScreenY * 0.61f;
-        printf("[+] Retri dot default (proporsional): (%.0f, %.0f) - Set Dot utk presisi\n", retriTouchX, retriTouchY);
-    }
+    // v1.15: retriX/Y ga di-persist lagi -> SELALU default proporsional tiap run
+    // (sama seperti v0.3 yang terbukti: default ~1575,661 di 2460x1080). Posisi
+    // tombol retri MLBB kira-kira 64% lebar & 61% tinggi.
+    retriTouchX = abs_ScreenX * 0.64f;
+    retriTouchY = abs_ScreenY * 0.61f;
+    printf("[+] Retri dot default (proporsional): (%.0f, %.0f). Kalau meleset: Set Dot (ketuk tombol retri 1x) atau geser X/Y.\n", retriTouchX, retriTouchY);
     if (!initGUI_draw(native_window_screen_x, native_window_screen_y, true)) {
         return -1;
     }
@@ -2154,15 +2147,16 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
                    (long long) g_touchTapFails, g_touchLastErr, g_realTouchDowns,
                    (unsigned long long) g_roomBM, g_roomBlueN, g_roomRedN, MonsterCount,
                    autoRetribution ? 1 : 0, g_roomMyCamp);
-        // hasil kalibrasi 1-tap: gerakkan dot marker ke posisi logical yang sama
+        // hasil kalibrasi 1-tap (Set Dot): simpan native ground-truth + gerakkan
+        // dot marker ke posisi logical yang sama. v1.15: tap retri pakai NATIVE ini
+        // langsung (orientation-proof), bukan hasil solve screen-map.
         if (g_retriLogicalX >= 0.0f) {
             retriTouchX = g_retriLogicalX;
             retriTouchY = g_retriLogicalY;
-            // anchor baru (logical+native dari 1 sentuhan asli) -> mapping di-solve ulang
             if (NativeInPanel(g_retriNativeX, g_retriNativeY)) {
                 ScreenMapSetAnchor(retriTouchX, retriTouchY, g_retriNativeX, g_retriNativeY);
-                printf("[RETRI] anchor baru: logical(%.0f,%.0f) <-> native(%d,%d) - mapping dot->tap aktif.\n",
-                       retriTouchX, retriTouchY, g_retriNativeX, g_retriNativeY);
+                printf("[RETRI] Set Dot OK: native(%d,%d) -> tap retri pakai titik ini persis (dot logical %.0f,%.0f)\n",
+                       g_retriNativeX, g_retriNativeY, retriTouchX, retriTouchY);
             } else {
                 printf("[RETRI] ⚠ capture native (%d,%d) di luar panel - coba lagi\n",
                        g_retriNativeX, g_retriNativeY);
