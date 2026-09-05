@@ -236,12 +236,30 @@ static uint64_t cdWallMs() {
     return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
 }
 
+// baca semua KEY dari il2cpp Dictionary<int, T> (entries@+0x18, count@+0x20)
+static int ReadDictIntKeys(uintptr_t dic, int* out, int maxOut) {
+    if (!dic) return 0;
+    auto entries = Read<uintptr_t>(dic + 0x18);
+    int count = Read<int>(dic + 0x20);
+    if (!entries || count <= 0 || count > 64) return 0;
+    int alen = Read<int>(entries + 0x18);
+    if (alen < count || alen > 128) return 0;
+    uintptr_t base = entries + 0x20;
+    int n = 0;
+    for (int i = 0; i < count && n < maxOut; i++) {
+        int key = Read<int>(base + i * 0x18 + 8);
+        if (key) out[n++] = key;
+    }
+    return n;
+}
+
 void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
     for (int i = 0; i < 3; i++) { slotReady[i] = true; slotCd[i] = 0; }
     auto comp = Read<uintptr_t>(entity + 0xf8); // m_ShowCoolDownComp
     if (!comp) return;
     auto dic = Read<uintptr_t>(comp + 0x18);    // _dicCD
     if (!dic) return;
+
     // il2cpp Dictionary: +0x18 _entries(array), +0x20 _count(int)
     auto entries = Read<uintptr_t>(dic + 0x18);
     int count = Read<int>(dic + 0x20);
@@ -255,7 +273,17 @@ void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
 
     uint64_t nowMs = cdWallMs();
 
-    int ids[16];
+    // _dicSkillCnf (comp+0x20) = kumpulan skill id hero ini. Urutan ascending dipakai sbg
+    // referensi tombol (S1=S1, dst). Kalau kosong/null, fallback ke urutan kemunculan CD.
+    int heroSkills[12] = {0};
+    int heroN = ReadDictIntKeys(Read<uintptr_t>(comp + 0x20), heroSkills, 12);
+    for (int i = 1; i < heroN; i++) {           // insertion sort ascending
+        int v = heroSkills[i]; int j = i - 1;
+        while (j >= 0 && heroSkills[j] > v) { heroSkills[j + 1] = heroSkills[j]; j--; }
+        heroSkills[j + 1] = v;
+    }
+
+    int slotFor[16];     // slot 0..2 utk tiap spell yg lagi CD
     int cds[16];
     int n = 0;
     for (int i = 0; i < count && n < 16; i++) {
@@ -270,6 +298,14 @@ void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
 
         // Entry ada di _dicCD = skill lagi CD. Kalau coolTime tidak valid, skip.
         if (coolTime == 0) continue;
+
+        // tentukan slot (S1/S2/ULT): cari posisi spellID di daftar skill hero
+        int slot = -1;
+        if (heroN > 0) {
+            for (int h = 0; h < heroN && h < 8; h++) if (heroSkills[h] == spellID) { slot = h; break; }
+        }
+        if (slot < 0) slot = n;    // fallback: urutan kemunculan
+        if (slot > 2) continue;    // bukan skill tombol (passive/summoner/dll) — skip
 
         // cari/daftarkan anchor untuk (entity, spellID, startTime)
         int ai = -1;
@@ -292,29 +328,20 @@ void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
 
         uint64_t elapsedMs = nowMs - g_cdAnchor[ai].wallMs;
         uint32_t remain = (elapsedMs >= coolTime) ? 0 : (uint32_t)(coolTime - elapsedMs);
-        // fallback: kalau flag cooling masih nyala, minimal merah walau sisa belum akurat
-        if (remain == 0 && coolingFlag) remain = coolTime;
-        if (remain == 0) {
-            // anchor kedaluwarsa / salah deteksi — coba pakai uiStartTime relative ke battle?
-            // Kita tidak tahu jam game; flag cooling = sumber kebenaran state.
-            if (coolingFlag) remain = (coolTime > 1000) ? coolTime / 1000 : 1;
-        }
+        if (remain == 0 && coolingFlag) remain = coolTime;   // masih nyala => merah
+        if (remain == 0 && coolingFlag) remain = (coolTime > 1000) ? coolTime / 1000 : 1;
 
-        ids[n] = spellID;
+        slotFor[n] = slot;
         cds[n] = (int)((remain + 999) / 1000); // pembulatan ke atas biar ga 0 pas masih CD
         n++;
     }
     if (n == 0) return;
-    // sort by spellID (ID kecil = skill1, ID besar = ult)
-    for (int i = 0; i < n - 1; i++)
-        for (int j = i + 1; j < n; j++)
-            if (ids[j] < ids[i]) { int t=ids[i]; ids[i]=ids[j]; ids[j]=t; int u=cds[i]; cds[i]=cds[j]; cds[j]=u; }
-    // ambil 3 terakhir (skill2, skill1, ult) atau sesuai jumlah
-    int start = (n >= 3) ? n - 3 : 0;
-    int k = 0;
-    for (int i = start; i < n && k < 3; i++, k++) {
-        slotReady[k] = (cds[i] == 0);
-        slotCd[k] = cds[i];
+    for (int k = 0; k < n; k++) {
+        int s = slotFor[k];
+        if (s >= 0 && s < 3) {
+            slotReady[s] = (cds[k] == 0);
+            slotCd[s] = cds[k];
+        }
     }
 }
 
@@ -592,20 +619,31 @@ void DrawMonster(ImDrawList *Draw) {
                 py += 11.0f;
             }
             if (drawMSkillCD) {
-                // 3 dot: S1 S2 ULT — merah=CD, hijau=ready
+                // Skill CD — kolom terpisah di KANAN panel info (bukan numpuk di bar HP/MP).
+                // Tiap skill punya kolom sendiri: label S1/S2/ULT + dot (hijau=ready, merah=CD)
+                // + angka sisa CD di bawah dot-NYA SENDIRI (biar ga numpuk & gampang dibedain).
                 bool slotReady[3];
                 int slotCd[3];
                 GetEnemySkillCD(Objaddr, slotReady, slotCd);
-                float dR = 5.0f;
+                const char* slotName[3] = { "S1", "S2", "ULT" };
+                float cdx = px + bw + 14.0f;   // kanan panel HP/MP
+                float cy  = HeroPos.Y - 30.0f;  // sejajar atas panel
+                const float colW = 28.0f;
                 for (int s = 0; s < 3; s++) {
-                    ImVec2 c(px + 8 + s * 18, py + dR);
+                    float sx = cdx + s * colW + colW / 2.0f;
+                    // label skill
+                    ImVec2 ls = ImGui::CalcTextSize(slotName[s]);
+                    dl->AddText(ImVec2(sx - ls.x / 2.0f, cy), IM_COL32(200, 200, 200, 230), slotName[s]);
+                    // dot state
                     ImU32 col = slotReady[s] ? IM_COL32(0, 255, 120, 255) : IM_COL32(255, 70, 70, 255);
-                    dl->AddCircleFilled(c, dR, col, 12);
-                    dl->AddCircle(c, dR, IM_COL32(0, 0, 0, 200), 12, 1.5f);
+                    dl->AddCircleFilled(ImVec2(sx, cy + 15.0f), 6.5f, col, 20);
+                    dl->AddCircle(ImVec2(sx, cy + 15.0f), 6.5f, IM_COL32(0, 0, 0, 200), 20, 1.5f);
+                    // angka sisa CD — di bawah dot skill ini sendiri (tidak numpuk dgn skill lain)
                     if (!slotReady[s] && slotCd[s] > 0) {
-                        char t[16];
+                        char t[8];
                         snprintf(t, sizeof(t), "%d", slotCd[s]);
-                        dl->AddText(ImVec2(px + 66, py - 2), IM_COL32(255, 140, 255, 255), t);
+                        ImVec2 ts = ImGui::CalcTextSize(t);
+                        dl->AddText(ImVec2(sx - ts.x / 2.0f, cy + 24.0f), IM_COL32(255, 255, 255, 255), t);
                     }
                 }
             }
@@ -1278,7 +1316,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v1.1");
+    ImGui::TextDisabled("MLBB v1.2");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1680,7 +1718,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.1\n");
+    printf("[+] PANXCZ MLBB v1.2\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");

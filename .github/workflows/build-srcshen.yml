@@ -55,11 +55,17 @@ jobs:
       - name: Create pre-release v1.0
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.1
-          name: "Panxcz cheat mlbb v1.1 pre release"
+          tag_name: v1.2
+          name: "Panxcz cheat mlbb v1.2 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v1.1 pre release
+            ## Panxcz cheat mlbb v1.2 pre release
+
+            ### HOTFIX — LAYOUT SKILL CD + MAPPING SLOT (v1.2)
+            - **CD dipindah ke KANAN hero** (kolom terpisah dari bar HP/MP) — sebelumnya dot & angka CD numpuk di area bar + semua angka di satu titik → susah dibedain.
+            - **Tiap skill punya kolom sendiri**: label S1/S2/ULT + dot (hijau=ready, merah=CD) + angka sisa CD di bawah dot-NYA masing-masing.
+            - **Mapping slot akurat**: pakai `_dicSkillCnf` (daftar skill asli hero) biar spell yang lagi CD ke-taruh di kolom yang bener (dulu kalau cuma ULT yg CD, ke-label S1).
+
 
             ### HOTFIX — SKILL CD GA KELIATAN (v1.1)
             - **Akar masalah**: sisa CD dihitung pakai `time(nullptr)*1000` (epoch wall-clock ~1.7 triliun) padahal `uiStartTime/uiCoolTime` itu **jam internal battle** (nilai kecil). `elapsed = now - startTime` selalu raksasa → sisa selalu 0 → dot selalu hijau "ready" walau skill lagi CD → keliatan mati utk semua hero.
