@@ -52,20 +52,40 @@ jobs:
           name: panxcz-mlbb
           path: release/
 
-      - name: Create pre-release v1.0
+      - name: Bersihkan asset stale di release (kalau tag dipakai ulang)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
+          # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
+          REL="v1.4"
+          if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
+            for NAME in panxcz dump.cs Offset.h; do
+              ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
+              if [ -n "$ID" ]; then
+                echo "menghapus asset stale: $NAME ($ID)"
+                gh api -X DELETE "repos/${{ github.repository }}/releases/assets/$ID" || true
+              fi
+            done
+          fi
+
+      - name: Create pre-release v1.4
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.2
-          name: "Panxcz cheat mlbb v1.2 pre release"
+          tag_name: v1.4
+          name: "Panxcz cheat mlbb v1.4 pre release"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v1.2 pre release
+            ## Panxcz cheat mlbb v1.4 pre release
 
             ### HOTFIX — LAYOUT SKILL CD + MAPPING SLOT (v1.2)
             - **CD dipindah ke KANAN hero** (kolom terpisah dari bar HP/MP) — sebelumnya dot & angka CD numpuk di area bar + semua angka di satu titik → susah dibedain.
             - **Tiap skill punya kolom sendiri**: label S1/S2/ULT + dot (hijau=ready, merah=CD) + angka sisa CD di bawah dot-NYA masing-masing.
             - **Mapping slot akurat**: pakai `_dicSkillCnf` (daftar skill asli hero) biar spell yang lagi CD ke-taruh di kolom yang bener (dulu kalau cuma ULT yg CD, ke-label S1).
 
+
+            ### CATATAN VERSI
+            - **Yang bener buat di-download: `panxcz_mlbb`** (bukan `panxcz` — itu punya build NUSANTARA/rilis lain).
 
             ### HOTFIX — SKILL CD GA KELIATAN (v1.1)
             - **Akar masalah**: sisa CD dihitung pakai `time(nullptr)*1000` (epoch wall-clock ~1.7 triliun) padahal `uiStartTime/uiCoolTime` itu **jam internal battle** (nilai kecil). `elapsed = now - startTime` selalu raksasa → sisa selalu 0 → dot selalu hijau "ready" walau skill lagi CD → keliatan mati utk semua hero.

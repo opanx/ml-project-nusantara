@@ -1316,7 +1316,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v1.2");
+    ImGui::TextDisabled("MLBB v1.4");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1718,7 +1718,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.2\n");
+    printf("[+] PANXCZ MLBB v1.4\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
