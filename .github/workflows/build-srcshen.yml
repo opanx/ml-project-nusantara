@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.6"
+          REL="v1.7"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,30 +70,28 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.6
+      - name: Create pre-release v1.7
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.6
-          name: "Panxcz cheat mlbb v1.6 pre release (touch anti-block)"
+          tag_name: v1.7
+          name: "Panxcz cheat mlbb v1.7 pre release (skill CD sync)"
           prerelease: true
           body: |
-            ## Panxcz cheat mlbb v1.6 pre release (touch anti-block)
+            ## Panxcz cheat mlbb v1.7 pre release (skill CD sync)
 
-            ### 🔧 HOTFIX — RETRI TOUCH DITOLAK SISTEM (errno=38 ENOSYS) (v1.6)
-            - **Gejala**: tap retri 1-2x pertama sukses, terus `errno=38` (ENOSYS) selamanya — MLBB/Aegis re-enable `block_untrusted_touches=1` di runtime, kernel MTK langsung nolak event uinput.
-            - **Fix watchdog**: thread baru re-disable `block_untrusted_touches` (global/secure/system) tiap 1.5 detik selama tool jalan — counter anti-cheat yang suka nyalain lagi.
-            - **Fix retry tap**: kalau write uinput ditolak, retry 1x setelah 15ms (sering lolos pas block baru di-disable).
-            - **Diagnostic**: counter `tap fails` live di UI + baris DBG biar keliatan langsung kalau sistem masih nolak.
+            ### 🔧 SKILL CD — ANGKA SEKARANG SINKRON SAMA CD ASLI (v1.7)
+            - **Akar masalah sync**: CD cuma di-poll pas hero LAGI DI LAYAR. Kalau musuh make skill di luar layar (lane lain/jungle), anchor baru kepasang pas hero kelihatan → angkanya ngambang & ga nyambung sama CD asli.
+            - **Fix**: CD sekarang di-poll TIAP FRAME utk SEMUA hero yg hidup (di mana pun posisinya) → anchor ke-set pas skill beneran dipake, angka mundur bareng CD asli.
+            - **Hapus bug restart penuh**: ada hack lama yg bikin angka CD balik ke nilai penuh / nyangkut di angka gede pas anchor telat. Sekarang kalau entry masih ada di dictionary = masih CD (sumber kebenaran dari game sendiri: AddCD pas dipake, RemoveCD pas kelar).
+            - **Dot balik hijau pas CD kelar** — berdasarkan entry beneran ilang dari dictionary game, bukan tebakan timer.
+            - **Tampilan dibersihin**: cuma skill yg LAGI CD yg ditampilkan (label merah S1/S2/ULT + dot + angka mundur). Skill ready cuma dot kecil redup — ga ada lagi teks/angka nyangkut yg bikin bingung di sekitar hero.
 
-            ### 🛡️ DIRECT CALL — FIX LOG BANJIR + INSTALL DI ROM TANPA RWX (v1.6)
-            - **Fix log banjir**: install direct-call sekarang SEKALI per match + backoff 5s→10s→20s→30s kalau gagal (dulu nyoba tiap frame = spam log + attach ptrace berulang = risiko anti-cheat). Reset backoff pas ganti match.
-            - **Fix "no rwxp region"**: kalau device ga punya region RWX, fallback ke region `r-xp` (anon/JIT) — stub ditulis via **PTRACE poke** (bisa nulis ke region read-only) → direct call bisa install di lebih banyak ROM.
+            ### HOTFIX SEBELUMNYA (v1.6) — RETRI TOUCH DITOLAK SISTEM (errno=38 ENOSYS)
+            - Watchdog re-disable `block_untrusted_touches` tiap 1.5s + retry tap 1x + counter `tap fails` live di UI.
+            - Direct call: install SEKALI per match (backoff 5s→30s kalau gagal) + fallback install via PTRACE poke di ROM tanpa region RWX.
 
-            ### 🛡️ BARU — DIRECT CALL BYPASS (v1.5)
-            - **Engine `RemoteCall.h`**: panggil fungsi cast retri LANGSUNG di dalam proses game via **signal trampoline** — tanpa ptrace saat bermain (attach 5ms sekali doang, langsung detach), tanpa patch .so game, tanpa thread baru.
-            - **Bypass berlapis**: TracerPid=0 selama match, hash .so utuh, trigger = 1 sinyal OS, cleanup total saat exit. Penjelasan detail: **`BYPASS.md`** (baca dulu).
-            - **Tab Auto Retri → Direct Call (Bypass)**: toggle + status INSTALLED/FAILED live. Default OFF — pakai touch dulu sampai RVA cast diverifikasi di device (ganti `RETRI_CAST_RVA` di main.cpp, default `0x26c998c` = ReqUseSummonSkill dari dump). Kalau install gagal → otomatis fallback touch, no crash.
-            - **DoRetriTap prioritas direct call** kalau bypass ready, fallback touch.
+            ### 🛡️ DIRECT CALL BYPASS (v1.5)
+            - Engine `RemoteCall.h`: panggil cast retri langsung di proses game via signal trampoline (tanpa ptrace saat main, tanpa patch .so, tanpa thread baru). Detail: **BYPASS.md**.
 
             ### HOTFIX — LAYOUT SKILL CD + MAPPING SLOT (v1.2)
             - **CD dipindah ke KANAN hero** (kolom terpisah dari bar HP/MP) — sebelumnya dot & angka CD numpuk di area bar + semua angka di satu titik → susah dibedain.

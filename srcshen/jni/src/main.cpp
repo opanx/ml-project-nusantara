@@ -224,18 +224,76 @@ void ApplyDroneView() {
 // skill CD musuh: ShowCoolDownComp(ShowEntity+0xf8) -> _dicCD(0x18) Dictionary<Int32,CoolDownData>
 // slotReady[]: 3 slot (S1, S2, ULT) — true kalau ready; slotCd[]: sisa detik
 //
-// Catatan penting: uiStartTime/uiCoolTime itu JAM INTERNAL GAME (ms sejak battle start),
-// BUKAN epoch wall-clock. Kalau dihitung pakai time()*1000, elapsed selalu raksasa ->
-// sisa selalu 0 -> dot selalu "ready" -> CD keliatan mati. Jadi dipakai anchor wall-clock
-// (steady_clock) per (entity, spellID, startTime): entry dictionary muncul pas skill dipake
-// (AddCD), jadi anchor = pertama kali kita lihat entry -> countdown mundur akurat.
+// ===== SINKRONISASI v1.7 =====
+// Kebenaran datang dari GAME sendiri, bukan tebakan:
+//   - _dicCD cuma berisi skill yg SEDANG CD (AddCD pas skill dipake, RemoveCD pas kelar).
+//     Jadi entry ADA di dictionary == skill lagi CD.
+//   - uiStartTime/uiCoolTime itu jam internal battle (ms sejak battle start), BUKAN epoch
+//     wall-clock. Kita ga bisa baca jam internalnya langsung, jadi dipakai anchor
+//     steady_clock yg dipasang pas entry PERTAMA KALI kelihatan (~ pas skill dipake).
+//   - Fungsi ini DIPANGGIL TIAP FRAME UNTUK SEMUA HERO YG HIDUP (bukan cuma yg lagi di
+//     layar), jadi anchor selalu ke-set pas skill dipake di mana pun hero berada -> angka
+//     CD turun bareng CD asli & dot balik hijau pas game hapus entry (CD kelar).
 struct CdAnchor { uintptr_t entity; int spell; uint32_t start; uint64_t wallMs; };
-static CdAnchor g_cdAnchor[64];
+static CdAnchor g_cdAnchor[96];
 static int g_cdAnchorN = 0;
 
 static uint64_t cdWallMs() {
     auto now = std::chrono::steady_clock::now().time_since_epoch();
     return (uint64_t)std::chrono::duration_cast<std::chrono::milliseconds>(now).count();
+}
+
+// helper: cari anchor utk (entity, spell). -1 kalau belum ada.
+static int CdFind(uintptr_t entity, int spell) {
+    for (int a = 0; a < g_cdAnchorN; a++)
+        if (g_cdAnchor[a].entity == entity && g_cdAnchor[a].spell == spell) return a;
+    return -1;
+}
+
+// helper: set/update anchor. Kalau startTime beda (skill dipake ulang) -> reset hitung mundur.
+static void CdSet(uintptr_t entity, int spell, uint32_t start, uint64_t nowMs) {
+    int ai = CdFind(entity, spell);
+    if (ai < 0) {
+        if (g_cdAnchorN < 96) ai = g_cdAnchorN++;
+        else {
+            // penuh: evict yg paling lama ga kepake (wallMs terkecil)
+            uint64_t oldest = g_cdAnchor[0].wallMs; ai = 0;
+            for (int a = 1; a < 96; a++)
+                if (g_cdAnchor[a].wallMs < oldest) { oldest = g_cdAnchor[a].wallMs; ai = a; }
+        }
+        g_cdAnchor[ai].entity = entity;
+        g_cdAnchor[ai].spell = spell;
+        g_cdAnchor[ai].start = start;
+        g_cdAnchor[ai].wallMs = nowMs;
+    } else if (g_cdAnchor[ai].start != start) {
+        g_cdAnchor[ai].start = start;
+        g_cdAnchor[ai].wallMs = nowMs;
+    }
+}
+
+// helper: buang semua anchor milik entity (entity mati / comp-nya hilang)
+static void CdClear(uintptr_t entity) {
+    for (int a = 0; a < g_cdAnchorN; ) {
+        if (g_cdAnchor[a].entity == entity) {
+            g_cdAnchor[a] = g_cdAnchor[g_cdAnchorN - 1];
+            g_cdAnchorN--;
+        } else a++;
+    }
+}
+
+// helper: buang anchor entity yg spell-nya udah ga ada di _dicCD (CD kelar -> dot hijau)
+static void CdPrune(uintptr_t entity, const int* used, int usedN) {
+    for (int a = 0; a < g_cdAnchorN; ) {
+        if (g_cdAnchor[a].entity != entity) { a++; continue; }
+        bool keep = false;
+        for (int u = 0; u < usedN; u++)
+            if (used[u] == g_cdAnchor[a].spell) { keep = true; break; }
+        if (keep) a++;
+        else {
+            g_cdAnchor[a] = g_cdAnchor[g_cdAnchorN - 1];
+            g_cdAnchorN--;
+        }
+    }
 }
 
 // baca semua KEY dari il2cpp Dictionary<int, T> (entries@+0x18, count@+0x20)
@@ -258,16 +316,16 @@ static int ReadDictIntKeys(uintptr_t dic, int* out, int maxOut) {
 void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
     for (int i = 0; i < 3; i++) { slotReady[i] = true; slotCd[i] = 0; }
     auto comp = Read<uintptr_t>(entity + 0xf8); // m_ShowCoolDownComp
-    if (!comp) return;
+    if (!comp) { CdClear(entity); return; }
     auto dic = Read<uintptr_t>(comp + 0x18);    // _dicCD
-    if (!dic) return;
+    if (!dic) { CdClear(entity); return; }
 
     // il2cpp Dictionary: +0x18 _entries(array), +0x20 _count(int)
     auto entries = Read<uintptr_t>(dic + 0x18);
     int count = Read<int>(dic + 0x20);
-    if (!entries || count <= 0 || count > 64) return;
+    if (!entries || count <= 0 || count > 64) { CdClear(entity); return; }
     int alen = Read<int>(entries + 0x18);      // array length
-    if (alen < count || alen > 128) return;
+    if (alen < count || alen > 128) { CdClear(entity); return; }
 
     // entry layout (il2cpp Dictionary<TKey,TVal>.Entry): hashCode@0, next@4, key@8, value@0x10; stride 0x18
     uintptr_t base = entries + 0x20;
@@ -285,7 +343,9 @@ void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
         heroSkills[j + 1] = v;
     }
 
-    int slotFor[16];     // slot 0..2 utk tiap spell yg lagi CD
+    int used[16];      // spell yg lagi CD (anchor-nya harus dipertahankan)
+    int usedN = 0;
+    int slotFor[16];   // slot 0..2 utk tiap spell yg lagi CD
     int cds[16];
     int n = 0;
     for (int i = 0; i < count && n < 16; i++) {
@@ -295,11 +355,7 @@ void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
         if (!spellID || !cd) continue;
 
         uint32_t coolTime = Read<uint32_t>(cd + 0x14);  // uiCoolTime (ms)
-        uint32_t startTime = Read<uint32_t>(cd + 0x1c); // uiStartTime (jam internal game)
-        bool coolingFlag = Read<bool>(cd + 0x20);       // m_isCoolDown
-
-        // Entry ada di _dicCD = skill lagi CD. Kalau coolTime tidak valid, skip.
-        if (coolTime == 0) continue;
+        if (coolTime == 0) continue;                    // ga valid -> skip
 
         // tentukan slot (S1/S2/ULT): cari posisi spellID di daftar skill hero
         int slot = -1;
@@ -309,34 +365,27 @@ void GetEnemySkillCD(uintptr_t entity, bool slotReady[3], int slotCd[3]) {
         if (slot < 0) slot = n;    // fallback: urutan kemunculan
         if (slot > 2) continue;    // bukan skill tombol (passive/summoner/dll) — skip
 
-        // cari/daftarkan anchor untuk (entity, spellID, startTime)
-        int ai = -1;
-        for (int a = 0; a < g_cdAnchorN; a++) {
-            if (g_cdAnchor[a].entity == entity && g_cdAnchor[a].spell == spellID &&
-                g_cdAnchor[a].start == startTime) { ai = a; break; }
-        }
-        if (ai < 0) {
-            if (g_cdAnchorN < 64) ai = g_cdAnchorN++;
-            else {
-                // evict entry tertua
-                uint64_t oldest = g_cdAnchor[0].wallMs; ai = 0;
-                for (int a = 1; a < 64; a++) if (g_cdAnchor[a].wallMs < oldest) { oldest = g_cdAnchor[a].wallMs; ai = a; }
-            }
-            g_cdAnchor[ai].entity = entity;
-            g_cdAnchor[ai].spell = spellID;
-            g_cdAnchor[ai].start = startTime;
-            g_cdAnchor[ai].wallMs = nowMs;
-        }
+        uint32_t startTime = Read<uint32_t>(cd + 0x1c); // uiStartTime (jam internal game)
+
+        // pasang/update anchor -> pas entry pertama kelihatan, anchor = momen skill dipake
+        CdSet(entity, spellID, startTime, nowMs);
+        int ai = CdFind(entity, spellID);
+        if (ai < 0) continue;
 
         uint64_t elapsedMs = nowMs - g_cdAnchor[ai].wallMs;
         uint32_t remain = (elapsedMs >= coolTime) ? 0 : (uint32_t)(coolTime - elapsedMs);
-        if (remain == 0 && coolingFlag) remain = coolTime;   // masih nyala => merah
-        if (remain == 0 && coolingFlag) remain = (coolTime > 1000) ? coolTime / 1000 : 1;
+        // Entry MASIH ADA di _dicCD -> game masih nganggap skill ini CD. Kalau anchor telat
+        // (mis. tool baru dinyalain pas CD udah jalan) dan sisa kelewat 0, tampilkan 1 dtk
+        // minimal — dot tetap merah sampe entry beneran ilang (ga restart penuh lagi).
+        if (remain == 0) remain = 1;
 
         slotFor[n] = slot;
         cds[n] = (int)((remain + 999) / 1000); // pembulatan ke atas biar ga 0 pas masih CD
+        used[usedN++] = spellID;
         n++;
     }
+    // bersihin anchor yg spell-nya udah ga ada di _dicCD (CD kelar -> balik hijau)
+    CdPrune(entity, used, usedN);
     if (n == 0) return;
     for (int k = 0; k < n; k++) {
         int s = slotFor[k];
@@ -544,6 +593,13 @@ void DrawMonster(ImDrawList *Draw) {
             continue;
         }
 
+        // ==== Skill CD tracker (v1.7) ====
+        // Di-poll utk SEMUA hero hidup tiap frame (bukan cuma yg lagi di layar) supaya
+        // anchor CD ke-set pas skill dipake di mana pun -> angka CD turun bareng aslinya.
+        bool cdReady[3] = { true, true, true };
+        int  cdRemain[3] = { 0, 0, 0 };
+        if (drawMSkillCD) GetEnemySkillCD(Objaddr, cdReady, cdRemain);
+
         Vector3 Z;
         vm_readv(selfp + m_vCachePosition, &Z, sizeof(Z));
       
@@ -633,31 +689,33 @@ void DrawMonster(ImDrawList *Draw) {
                 py += 11.0f;
             }
             if (drawMSkillCD) {
-                // Skill CD — kolom terpisah di KANAN panel info (bukan numpuk di bar HP/MP).
-                // Tiap skill punya kolom sendiri: label S1/S2/ULT + dot (hijau=ready, merah=CD)
-                // + angka sisa CD di bawah dot-NYA SENDIRI (biar ga numpuk & gampang dibedain).
-                bool slotReady[3];
-                int slotCd[3];
-                GetEnemySkillCD(Objaddr, slotReady, slotCd);
+                // Skill CD — kolom terpisah di KANAN panel info. State-nya udah di-poll
+                // tiap frame di atas (cdReady/cdRemain) utk SEMUA hero. Biar ga berantakan,
+                // cuma skill yg LAGI CD yg ditampilkan (label merah + dot + angka mundur);
+                // skill yg ready cuma dot kecil redup sebagai penanda posisi.
+                const bool* slotReady = cdReady;
+                const int*  slotCd    = cdRemain;
                 const char* slotName[3] = { "S1", "S2", "ULT" };
                 float cdx = px + bw + 14.0f;   // kanan panel HP/MP
                 float cy  = HeroPos.Y - 30.0f;  // sejajar atas panel
-                const float colW = 28.0f;
+                const float colW = 30.0f;
                 for (int s = 0; s < 3; s++) {
                     float sx = cdx + s * colW + colW / 2.0f;
-                    // label skill
-                    ImVec2 ls = ImGui::CalcTextSize(slotName[s]);
-                    dl->AddText(ImVec2(sx - ls.x / 2.0f, cy), IM_COL32(200, 200, 200, 230), slotName[s]);
-                    // dot state
-                    ImU32 col = slotReady[s] ? IM_COL32(0, 255, 120, 255) : IM_COL32(255, 70, 70, 255);
-                    dl->AddCircleFilled(ImVec2(sx, cy + 15.0f), 6.5f, col, 20);
-                    dl->AddCircle(ImVec2(sx, cy + 15.0f), 6.5f, IM_COL32(0, 0, 0, 200), 20, 1.5f);
-                    // angka sisa CD — di bawah dot skill ini sendiri (tidak numpuk dgn skill lain)
-                    if (!slotReady[s] && slotCd[s] > 0) {
-                        char t[8];
-                        snprintf(t, sizeof(t), "%d", slotCd[s]);
-                        ImVec2 ts = ImGui::CalcTextSize(t);
-                        dl->AddText(ImVec2(sx - ts.x / 2.0f, cy + 24.0f), IM_COL32(255, 255, 255, 255), t);
+                    if (!slotReady[s]) {
+                        // lagi CD: label merah + dot merah + angka sisa di bawah dot sendiri
+                        ImVec2 ls = ImGui::CalcTextSize(slotName[s]);
+                        dl->AddText(ImVec2(sx - ls.x / 2.0f, cy), IM_COL32(255, 120, 120, 255), slotName[s]);
+                        dl->AddCircleFilled(ImVec2(sx, cy + 15.0f), 6.5f, IM_COL32(255, 70, 70, 255), 20);
+                        dl->AddCircle(ImVec2(sx, cy + 15.0f), 6.5f, IM_COL32(0, 0, 0, 200), 20, 1.5f);
+                        if (slotCd[s] > 0) {
+                            char t[8];
+                            snprintf(t, sizeof(t), "%d", slotCd[s]);
+                            ImVec2 ts = ImGui::CalcTextSize(t);
+                            dl->AddText(ImVec2(sx - ts.x / 2.0f, cy + 24.0f), IM_COL32(255, 255, 255, 255), t);
+                        }
+                    } else {
+                        // ready: dot kecil redup aja (ga spam label S1/S2/ULT hijau)
+                        dl->AddCircleFilled(ImVec2(sx, cy + 15.0f), 4.0f, IM_COL32(0, 255, 120, 90), 16);
                     }
                 }
             }
@@ -1377,7 +1435,7 @@ void Layout_tick_UI() {
     ImGui::SetCursorPos(ImVec2(14, 13));
     ImGui::TextColored(ImColor(0, 220, 255, 255), "PANXCZ");
     ImGui::SameLine();
-    ImGui::TextDisabled("MLBB v1.6");
+    ImGui::TextDisabled("MLBB v1.7");
     ImGui::SetCursorPos(ImVec2(w - 236, 15));
     ImGui::TextColored(ImColor(0, 255, 140, 255), "%.0f FPS | %s", io.Framerate, langEN ? "EN" : "ID");
     // tombol minimize (-) & exit (x) - ukuran nyaman buat jari
@@ -1801,7 +1859,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.6 (touch anti-block watchdog)\n");
+    printf("[+] PANXCZ MLBB v1.7 (skill CD sync + ESP bersih)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
