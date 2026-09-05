@@ -59,7 +59,7 @@ jobs:
         run: |
           # Hapus asset lama yang nyangkut (panxcz/dump.cs/Offset.h dari build lain)
           # supaya release srcshen cuma berisi panxcz_mlbb + dump_22.1.97.12061.cs
-          REL="v1.10"
+          REL="v1.11"
           if gh release view "$REL" --json tagName -q .tagName >/dev/null 2>&1; then
             for NAME in panxcz dump.cs Offset.h; do
               ID=$(gh api "repos/${{ github.repository }}/releases/tags/$REL" --jq ".assets[] | select(.name==\"$NAME\") | .id" 2>/dev/null)
@@ -70,13 +70,32 @@ jobs:
             done
           fi
 
-      - name: Create pre-release v1.10
+      - name: Create pre-release v1.11
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: v1.10
-          name: "Panxcz cheat mlbb v1.10 pre release (fix menu touch + anti-numpuk CD)"
+          tag_name: v1.11
+          name: "Panxcz cheat mlbb v1.11 pre release (observability)"
           prerelease: true
           body: |
+            ## Panxcz cheat mlbb v1.11 pre release (observability)
+
+            ### 🔬 STUDI HERZ-KIMMY SAMPAI AKAR + STATUS YANG SEKARANG KELIHATAN (v1.11)
+            Setelah bedah binary herz-kimmy sampe dalem (DT_NEEDED, symbol, event touch, surface):
+            - **Arsitektur herz = arsitektur kita**: herz cuma linked ke libandroid+EGL, symbol SurfaceFlinger (createSurface/Transaction/setTrustedOverlay) di-resolve runtime via dlsym — persis ANWC kita. Overlay = surface tersembunyi via SF + EGL, input = grab device asli + uinput clone + mirror, ImGui di-feed langsung dari event asli.
+            - **herz juga pake `Transaction::setTrustedOverlay`** (surface di-trust) + `block_untrusted_touches 0` — kita juga udah punya kode yang sama, TAPI selama ini **ga kelihatan resolve apa nggak**. Mulai v1.11:
+              - `[+] TRUSTED OVERLAY: OK` → surface ke-trust, touch game ga diblokir
+              - `[-] TRUSTED OVERLAY: GAGAL resolve` → ini yang bikin tap sintetik bisa diblokir MLBB/Aegis
+            - **Baris baru di startup**: `Screen: ... (displayInfo ... orient=N)` dan `[TOUCH] init OK ... orient=N scale=X/Y` → nentuin mapping koordinat bener/salah dalam satu liat.
+            - Fitur inti lain sudah setara: event tap DOWN (ABS_X/Y + POS + TRACKING_ID + SYN_MT_REPORT + BTN), watchdog `block_untrusted_touches`, verifikasi HP abis tap (`✓`/`✗`), screen-map dot→native.
+
+            ### Cara baca hasil test (penting!):
+            1. Banner `PANXCZ MLBB v1.11`
+            2. Catat baris: `TRUSTED OVERLAY: OK/GAGAL`, `Screen ... orient=N`, `[TOUCH] init OK ... orient=N scale=X/Y`
+            3. Sentuh menu → harus ada `sentuhan asli diterima` + `realtouch` nambah di baris DBG
+            4. Report 3 baris itu ke gw → langsung ketahuan akar masalahnya (trusted overlay gagal / orientasi mapping salah / input mati).
+
+            ---
+
             ## Panxcz cheat mlbb v1.10 pre release (fix menu touch + anti-numpuk CD)
 
             ### 🖐️ MENU GA BISA DISENTUH DI v1.9? INI HOTFIX (v1.10)

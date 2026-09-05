@@ -647,8 +647,9 @@ bool Touch_Init(int w, int h, uint32_t orientation_, bool readOnly) {
 
     g_touchInitOk = 1;
     g_touchFdCount = fdNum;
-    printf("[TOUCH] init OK: %d device grabbed [%s], uinput fd=%d, screen %dx%d\n",
-           fdNum, g_touchDevName[0] ? g_touchDevName : "?", nowfd, screenX, screenY);
+    printf("[TOUCH] init OK: %d device grabbed [%s], uinput fd=%d, screen %dx%d orient=%u scale=%.2f/%.2f\n",
+           fdNum, g_touchDevName[0] ? g_touchDevName : "?", nowfd, screenX, screenY,
+           (unsigned) orientation_, scale_x, scale_y);
     system("chmod 000 -R /proc/bus/input/*");
 
     // watchdog re-disable block_untrusted_touches (counter anti-cheat re-enable)

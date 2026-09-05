@@ -2072,7 +2072,7 @@ static void *VolumeKeyWatcher(void *arg) {
 }
 
 __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
-    printf("[+] PANXCZ MLBB v1.10 (revert tap pressure + anti-numpuk CD + telemetri sentuh)\n");
+    printf("[+] PANXCZ MLBB v1.11 (observability: trusted overlay + orientasi + telemetri)\n");
     pid = pidof(oxorany("com.mobile.legends:UnityKillsMe"));
     if (!pid) {
         printf("[~] UnityKillsMe not found, trying main process...\n");
@@ -2099,7 +2099,8 @@ __attribute__((visibility("default"))) int main(int argc, char *argv[]) {
     ::native_window_screen_x = (displayInfo.height > displayInfo.width ? displayInfo.height : displayInfo.width);
     // NOTE: y harus dimensi MIN, bukan max (dulu salah -> surface lebih tinggi dari layar)
     ::native_window_screen_y = (displayInfo.height < displayInfo.width ? displayInfo.height : displayInfo.width);
-    printf("[+] Screen: %dx%d\n", abs_ScreenX, abs_ScreenY);
+    printf("[+] Screen: %dx%d (displayInfo %dx%d orient=%u)\n", abs_ScreenX, abs_ScreenY,
+           displayInfo.width, displayInfo.height, displayInfo.orientation);
     // Posisi default tombol retri: proporsional ke layar (support semua resolusi/HP).
     // Kalau user pernah Set Dot / punya cfg, LoadCfg() nanti menimpa dgn nilai tersimpan.
     // Posisi tombol retri MLBB kira-kira 64% lebar & 61% tinggi (dari kalibrasi 2460x1080).

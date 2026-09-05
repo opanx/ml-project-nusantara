@@ -495,6 +495,17 @@ namespace android {
                         nullptr != Functionals::GetInstance().SurfaceComposerClient__Transaction__Constructor) {
                         transaction.SetTrustedOverlay(result, true);
                         transaction.Apply(false, true);
+                        static bool s_loggedTrustedOk = false;
+                        if (!s_loggedTrustedOk) {
+                            s_loggedTrustedOk = true;
+                            printf("[+] TRUSTED OVERLAY: OK (surface di-trust, touch game ga diblokir)\n");
+                        }
+                    } else {
+                        static bool s_loggedTrustedFail = false;
+                        if (!s_loggedTrustedFail) {
+                            s_loggedTrustedFail = true;
+                            printf("[-] TRUSTED OVERLAY: GAGAL resolve (setTrustedOverlay/apply) - kalau touch game diblokir, ini penyebabnya\n");
+                        }
                     }
                 }
 
