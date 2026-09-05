@@ -16,7 +16,7 @@
     ClassName##__##MethodName = reinterpret_cast<decltype(ClassName##__##MethodName)>(symbolMethod.Find(Handle, MethodSignature));       \
     if (nullptr == ClassName##__##MethodName)                                                                                            \
     {                                                                                                                                    \
-        // cukup ke logcat, JANGAN spam console (user liat console pas main)                                                                \
+        /* cuma ke logcat, JANGAN spam console (user liat console pas main) */                                                             \
         __android_log_print(ANDROID_LOG_ERROR, "ImGui", "[-] Method not found: %s -> %s::%s", MethodSignature, #ClassName, #MethodName); \
     }
 
